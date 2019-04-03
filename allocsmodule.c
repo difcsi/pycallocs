@@ -31,7 +31,7 @@ static struct PyModuleDef allocsmodule =
 
 PyMODINIT_FUNC PyInit_allocs(void)
 {
-    if (PyType_Ready(&ForeignLibrary_Type) < 0)
+    if (PyType_Ready(&ForeignLibraryLoader_Type) < 0)
         return NULL;
 
     if (PyType_Ready(&ForeignFunction_Type) < 0)
@@ -41,8 +41,8 @@ PyMODINIT_FUNC PyInit_allocs(void)
     if (m == NULL)
         return NULL;
 
-    Py_INCREF(&ForeignLibrary_Type);
-    PyModule_AddObject(m, "ForeignLibrary", (PyObject *) &ForeignLibrary_Type);
+    Py_INCREF(&ForeignLibraryLoader_Type);
+    PyModule_AddObject(m, "ForeignLibraryLoader", (PyObject *) &ForeignLibraryLoader_Type);
     Py_INCREF(&ForeignFunction_Type);
     PyModule_AddObject(m, "ForeignFunction", (PyObject *) &ForeignFunction_Type);
     return m;

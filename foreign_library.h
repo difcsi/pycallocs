@@ -3,7 +3,7 @@
 
 #include <Python.h>
 
-PyTypeObject ForeignLibrary_Type;
+PyTypeObject ForeignLibraryLoader_Type;
 
 PyTypeObject ForeignFunction_Type;
 PyObject *ForeignFunction_New(const char *symname, void *funptr);
