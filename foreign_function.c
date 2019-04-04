@@ -14,6 +14,8 @@ typedef struct {
     void *ff_funptr;
     const struct uniqtype *ff_type;
     ffi_cif *ff_cif;
+    // Ensure that the library is never unloaded while the function is callable
+    PyObject *ff_dlloader;
 } ForeignFunctionObject;
 
 static ffi_type *ffi_type_for_uniqtype(struct uniqtype *type)
@@ -109,13 +111,13 @@ static int foreignfun_setup_cif(ForeignFunctionObject *self)
 
     ffi_type **arg_types = NULL;
     unsigned narg = type->un.subprogram.narg;
-    if (narg > 0) arg_types = malloc(narg * sizeof(ffi_type *));
+    if (narg > 0) arg_types = PyMem_Malloc(narg * sizeof(ffi_type *));
     for (int i = 0 ; i < narg ; ++i)
     {
         arg_types[i] = ffi_type_for_uniqtype(type->related[i+1].un.t.ptr);
     }
 
-    ffi_cif *cif = malloc(sizeof(ffi_cif));
+    ffi_cif *cif = PyMem_Malloc(sizeof(ffi_cif));
     if (ffi_prep_cif(cif, FFI_DEFAULT_ABI, narg, ret_type, arg_types) == FFI_OK)
     {
         self->ff_cif = cif;
@@ -123,8 +125,8 @@ static int foreignfun_setup_cif(ForeignFunctionObject *self)
     }
     else
     {
-        free(cif);
-        free(arg_types);
+        PyMem_Free(cif);
+        PyMem_Free(arg_types);
         PyErr_Format(PyExc_ImportError, "Failure in call information initialization for '%s'", self->ff_symname);
         return -1;
     }
@@ -492,6 +494,17 @@ static PyObject *foreignfun_repr(ForeignFunctionObject *self)
     return funsig;
 }
 
+static void foreignfun_dealloc(ForeignFunctionObject *self)
+{
+    Py_DECREF(self->ff_dlloader);
+    if (self->ff_cif)
+    {
+        PyMem_Free(self->ff_cif->arg_types);
+        PyMem_Free(self->ff_cif);
+    }
+    Py_TYPE(self)->tp_free((PyObject *) self);
+}
+
 PyTypeObject ForeignFunction_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "allocs.ForeignFunction",
@@ -500,9 +513,10 @@ PyTypeObject ForeignFunction_Type = {
     .tp_itemsize = 0,
     .tp_repr = (reprfunc) foreignfun_repr,
     .tp_call = (ternaryfunc) foreignfun_call,
+    .tp_dealloc = (destructor) foreignfun_dealloc,
 };
 
-PyObject *ForeignFunction_New(const char *symname, void *funptr)
+PyObject *ForeignFunction_New(const char *symname, void *funptr, PyObject *dlloader)
 {
     ForeignFunctionObject *obj;
     obj = PyObject_New(ForeignFunctionObject, &ForeignFunction_Type);
@@ -510,5 +524,7 @@ PyObject *ForeignFunction_New(const char *symname, void *funptr)
     obj->ff_funptr = funptr;
     obj->ff_type = NULL;
     obj->ff_cif = NULL;
+    Py_INCREF(dlloader);
+    obj->ff_dlloader = dlloader;
     return (PyObject *) obj;
 }

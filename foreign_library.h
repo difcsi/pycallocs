@@ -6,6 +6,6 @@
 PyTypeObject ForeignLibraryLoader_Type;
 
 PyTypeObject ForeignFunction_Type;
-PyObject *ForeignFunction_New(const char *symname, void *funptr);
+PyObject *ForeignFunction_New(const char *symname, void *funptr, PyObject *dlloader);
 
 #endif

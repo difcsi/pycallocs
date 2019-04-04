@@ -63,9 +63,17 @@ static int dl_iterate_syms(struct link_map *handle,
     return ret;
 }
 
-static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
-        char *strtab, void *module)
+struct add_sym_ctxt
 {
+    PyObject *module;
+    PyObject *loader;
+};
+
+static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
+        char *strtab, void *arg)
+{
+    struct add_sym_ctxt *ctxt = arg;
+
     if ((ELF64_ST_TYPE(sym->st_info) == STT_FUNC
         /*|| ELF64_ST_TYPE(sym->st_info) == STT_OBJECT*/)
         && ELF64_ST_BIND(sym->st_info) == STB_GLOBAL
@@ -74,7 +82,7 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
     {
         char *symname = strtab + sym->st_name;
         void *obj = (void *)(loadAddress + sym->st_value);
-        PyModule_AddObject(module, symname, ForeignFunction_New(symname, obj));
+        PyModule_AddObject(ctxt->module, symname, ForeignFunction_New(symname, obj, ctxt->loader));
     }
 
     return 0;
@@ -87,7 +95,11 @@ static PyObject *foreignlibloader_create(PyObject *self, PyObject *spec)
 
 static PyObject *foreignlibloader_exec(ForeignLibraryLoaderObject *self, PyObject *module)
 {
-    dl_iterate_syms(self->dl_handle, add_sym_to_module, module);
+    struct add_sym_ctxt ctxt;
+    ctxt.module = module;
+    ctxt.loader = (PyObject *) self;
+
+    dl_iterate_syms(self->dl_handle, add_sym_to_module, &ctxt);
     Py_RETURN_NONE;
 }
 
