@@ -19,7 +19,8 @@ class ForeignLibraryFinder(importlib.abc.MetaPathFinder):
 
     def find_spec(fullname, path, target):
         if path is not None:
-            raise ModuleNotFoundError("ForeignLibraryFinder does not support submodules")
+            # Should we support submodules ?
+            return None
         
         for base_path in search_paths:
             try:
@@ -29,6 +30,6 @@ class ForeignLibraryFinder(importlib.abc.MetaPathFinder):
             except ImportError:
                 continue
 
-        raise ModuleNotFoundError("No foreign library found for ''".format(fullname))
+        return None
 
 sys.meta_path.append(ForeignLibraryFinder)
