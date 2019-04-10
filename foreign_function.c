@@ -1,12 +1,7 @@
 #include "foreign_library.h"
-#include <stdbool.h>
 #include <liballocs.h>
 #include <ffi.h>
 #include <dwarf.h>
-
-#ifdef FFI_TARGET_HAS_COMPLEX_TYPE
-# include <complex.h>
-#endif
 
 typedef struct {
     PyObject_HEAD
@@ -18,6 +13,23 @@ typedef struct {
     PyObject *ff_dlloader;
 } ForeignFunctionObject;
 
+static void free_ffi_type_arr(ffi_type **arr);
+static void free_ffi_type(ffi_type *typ)
+{
+    if (typ->type == FFI_TYPE_STRUCT)
+    {
+        free_ffi_type_arr(typ->elements);
+        PyMem_Free(typ);
+    }
+}
+static void free_ffi_type_arr(ffi_type **arr)
+{
+    if (!arr) return;
+    for (int i = 0; arr[i]; ++i) free_ffi_type(arr[i]);
+    PyMem_Free(arr);
+}
+
+// The caller must call free_ffi_type on the result to free the returned type
 static ffi_type *ffi_type_for_uniqtype(struct uniqtype *type)
 {
     switch (type->un.info.kind)
@@ -71,50 +83,98 @@ static ffi_type *ffi_type_for_uniqtype(struct uniqtype *type)
             }
         }
         case COMPOSITE:
-            // TODO : manage struct and unions (need to create ffi_type's)
+        {
+            // We must compute and store the ffi_type's of the struct fields
+            // This is required to comply with complicated ABI rules like in
+            // AMD64 ELF ABI.
+
+            int nb_fields = type->un.composite.nmemb;
+            ffi_type **field_ffi_types = PyMem_Malloc((1+nb_fields) * sizeof(ffi_type *));
+            for (int i = 0; i < nb_fields; ++i)
+            {
+                field_ffi_types[i] = ffi_type_for_uniqtype(type->related[i].un.t.ptr);
+                if (!field_ffi_types[i])
+                {
+                    free_ffi_type_arr(field_ffi_types);
+                    return NULL;
+                }
+            }
+            field_ffi_types[nb_fields] = NULL;
+
+            ffi_type *ffityp = PyMem_Malloc(sizeof(ffi_type));
+            *ffityp = (ffi_type){
+                .type = FFI_TYPE_STRUCT,
+                .elements = field_ffi_types,
+            };
+
+            // v The line below requires a recent version of libffi v
+            //if (ffi_get_struct_offsets(FFI_DEFAULT_ABI, ffityp) != FFI_OK)
+            ffi_cif dummy;
+            if (ffi_prep_cif(&dummy, FFI_DEFAULT_ABI, 0, ffityp, NULL) != FFI_OK)
+            {
+                free_ffi_type(ffityp);
+                return NULL;
+            }
+
+            // We may have to patch size and alignment to handle unions
+            if (ffityp->size != UNIQTYPE_SIZE_IN_BYTES(type))
+            {
+                ffityp->size = UNIQTYPE_SIZE_IN_BYTES(type);
+                // Be conservative about alignment if size is modified
+                for (int i = 0; i < nb_fields; ++i)
+                {
+                    if (field_ffi_types[i]->alignment > ffityp->alignment)
+                    {
+                        ffityp->alignment = field_ffi_types[i]->alignment;
+                    }
+                }
+            }
+
+            return ffityp;
+        }
         case SUBRANGE:
         default:
             return NULL; // not handled
     }
 }
 
-/* All the `foreignfun_setup_*` functions are returning a negative value and set
- * a Python exception on failure */
-
-static int foreignfun_setup_type(ForeignFunctionObject *self)
-{
-    if (self->ff_type) return 0;
-
-    const struct uniqtype *type = __liballocs_get_alloc_type(self->ff_funptr);
-    if (!type || !UNIQTYPE_IS_SUBPROGRAM_TYPE(type))
-    {
-        PyErr_Format(PyExc_ImportError, "Retrieving type information for foreign function '%s' failed", self->ff_symname);
-        return -1;
-    }
-
-    self->ff_type = type;
-    return 0;
-}
-
+/* foreignfun_setup_cif returns a negative value and sets a Python exception
+ * on failure */
 static int foreignfun_setup_cif(ForeignFunctionObject *self)
 {
     if (self->ff_cif) return 0;
-    if (foreignfun_setup_type(self) < 0) return -1;
     const struct uniqtype *type = self->ff_type;
 
     if (type->un.subprogram.nret != 1)
     {
-        PyErr_SetString(PyExc_ImportError, "Function not having exactly one return value are not supported");
+        PyErr_SetString(PyExc_ImportError, "Foreign functions not having exactly one return value are not supported");
         return -1;
     }
     ffi_type *ret_type = ffi_type_for_uniqtype(type->related[0].un.t.ptr);
+    if (!ret_type)
+    {
+        PyErr_SetString(PyExc_ImportError, "Cannot get ABI encoding for return value");
+        free_ffi_type(ret_type);
+        return -1;
+    }
 
     ffi_type **arg_types = NULL;
     unsigned narg = type->un.subprogram.narg;
-    if (narg > 0) arg_types = PyMem_Malloc(narg * sizeof(ffi_type *));
+    if (narg > 0)
+    {
+        arg_types = PyMem_Malloc((1+narg) * sizeof(ffi_type *));
+        arg_types[narg] = NULL;
+    }
     for (int i = 0 ; i < narg ; ++i)
     {
         arg_types[i] = ffi_type_for_uniqtype(type->related[i+1].un.t.ptr);
+        if (!arg_types[i])
+        {
+            PyErr_Format(PyExc_ImportError, "Cannot get ABI encoding for argument %d", i);
+            free_ffi_type(ret_type);
+            free_ffi_type_arr(arg_types);
+            return -1;
+        }
     }
 
     ffi_cif *cif = PyMem_Malloc(sizeof(ffi_cif));
@@ -126,281 +186,10 @@ static int foreignfun_setup_cif(ForeignFunctionObject *self)
     else
     {
         PyMem_Free(cif);
-        PyMem_Free(arg_types);
+        free_ffi_type(ret_type);
+        free_ffi_type_arr(arg_types);
         PyErr_Format(PyExc_ImportError, "Failure in call information initialization for '%s'", self->ff_symname);
         return -1;
-    }
-}
-
-// Adapted from builtin_ord
-static PyObject *char_to_long(PyObject* c)
-{
-    long ord;
-    Py_ssize_t size;
-
-    if (PyBytes_Check(c)) {
-        size = PyBytes_GET_SIZE(c);
-        if (size == 1) {
-            ord = (long)((unsigned char)*PyBytes_AS_STRING(c));
-            return PyLong_FromLong(ord);
-        }
-    }
-    else if (PyUnicode_Check(c)) {
-        if (PyUnicode_READY(c) == -1)
-            return NULL;
-        size = PyUnicode_GET_LENGTH(c);
-        if (size == 1) {
-            ord = (long)PyUnicode_READ_CHAR(c, 0);
-            return PyLong_FromLong(ord);
-        }
-    }
-    else if (PyByteArray_Check(c)) {
-        /* XXX Hopefully this is temporary */
-        size = PyByteArray_GET_SIZE(c);
-        if (size == 1) {
-            ord = (long)((unsigned char)*PyByteArray_AS_STRING(c));
-            return PyLong_FromLong(ord);
-        }
-    }
-    else {
-        PyErr_Format(PyExc_TypeError,
-                     "expected string of length 1 as argument, but " \
-                     "%.200s found", c->ob_type->tp_name);
-        return NULL;
-    }
-
-    PyErr_Format(PyExc_TypeError,
-                 "expected a character as argument, "
-                 "but string of length %zd found",
-                 size);
-    return NULL;
-}
-
-#define STORE_AS(val, type) do {\
-    type *tmem = mem; \
-    *tmem = (type)(val); \
-    return 0; \
-} while(0)
-
-static int store_pyobject_as_type(PyObject *obj, void *mem, const struct uniqtype *type)
-{
-    switch (type->un.info.kind)
-    {
-        case VOID:
-            // Means that we have a void parameter... should not be possible
-            PyErr_SetString(PyExc_TypeError, "This foreign function has a void argument, \
-                this should never happen, please consider making a bug report");
-            return -1;
-        case ARRAY:
-        case ADDRESS:
-        case SUBPROGRAM:
-        case ENUMERATION:
-            // TODO
-            return -1;
-        case BASE:
-        {
-            unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
-            bool decrobj = false;
-            switch (type->un.base.enc)
-            {
-                case DW_ATE_boolean:
-                {
-                    int is_true = PyObject_IsTrue(obj);
-                    if (is_true < 0) return -1;
-                    STORE_AS(is_true, uint8_t);
-                }
-
-                case DW_ATE_unsigned_char:
-                    obj = char_to_long(obj);
-                    if (!obj) return -1;
-                    decrobj = true;
-                    // fall through
-                case DW_ATE_address:
-                case DW_ATE_unsigned:
-                {
-                    unsigned long long u = PyLong_AsUnsignedLongLong(obj);
-                    if (decrobj) Py_DECREF(obj);
-                    if (PyErr_Occurred()) return -1;
-
-                    // Check for overflows
-                    unsigned long long max_val = (1ULL << (8*size)) - 1;
-                    if (u > max_val)
-                    {
-                        PyErr_Format(PyExc_OverflowError, "argument does not fit into a %d byte unsigned integer", size);
-                        return -1;
-                    }
-
-                    if (size == 1) STORE_AS(u, uint8_t);
-                    if (size == 2) STORE_AS(u, uint16_t);
-                    if (size == 4) STORE_AS(u, uint32_t);
-                    if (size == 8) STORE_AS(u, uint64_t);
-
-                    PyErr_Format(PyExc_TypeError, "Unsupported foreign unsigned integer parameter");
-                    return -1;
-                }
-                case DW_ATE_signed_char:
-                    obj = char_to_long(obj);
-                    if (!obj) return -1;
-                    decrobj = true;
-                    // fall through
-                case DW_ATE_signed:
-                {
-                    long long i = PyLong_AsLongLong(obj);
-                    if (decrobj) Py_DECREF(obj);
-                    if (PyErr_Occurred()) return -1;
-
-                    // Check for overflows & underflows
-                    long long max_val = (long long)((1ULL << (8*size-1)) - 1);
-                    long long min_val = -max_val - 1;
-                    if (i < min_val || i > max_val)
-                    {
-                        PyErr_Format(PyExc_OverflowError, "argument does not fit into a %d byte signed integer", size);
-                        return -1;
-                    }
-
-                    if (size == 1) STORE_AS(i, int8_t);
-                    if (size == 2) STORE_AS(i, int16_t);
-                    if (size == 4) STORE_AS(i, int32_t);
-                    if (size == 8) STORE_AS(i, int64_t);
-
-                    PyErr_SetString(PyExc_TypeError, "Unsupported foreign integer parameter");
-                    return -1;
-                }
-                    
-                case DW_ATE_float:
-                {
-                    double f = PyFloat_AsDouble(obj);
-                    if (PyErr_Occurred()) return -1;
-
-                    if (size == 4) STORE_AS(f, float);
-                    if (size == 8) STORE_AS(f, double);
-                    if (size == 16) STORE_AS(f, long double);
-                    
-                    PyErr_SetString(PyExc_TypeError, "Unsupported foreign float parameter");
-                    return -1;
-                }
-#ifdef FFI_TARGET_HAS_COMPLEX_TYPE
-                case DW_ATE_complex_float:
-                {
-                    Py_complex pz = PyComplex_AsCComplex(obj);
-                    if (PyErr_Occurred()) return -1;
-
-                    complex double z = CMPLX(pz.real, pz.imag);
-
-                    if (size == 8) STORE_AS(z, complex float);
-                    if (size == 16) STORE_AS(z, complex double);
-                    if (size == 32) STORE_AS(z, complex long double);
-
-                    PyErr_SetString(PyExc_TypeError, "Unsupported foreign complex parameter");
-                    return -1;
-                }
-#endif
-                default:
-                    PyErr_SetString(PyExc_TypeError, "Unsupported foreign base type parameter");
-                    return -1;
-            }
-        }
-        case COMPOSITE:
-            // TODO : manage struct and unions
-        case SUBRANGE:
-        default:
-            return -1; // not handled
-    }
-}
-
-PyObject *pyobject_from_type(void *data, const struct uniqtype *type)
-{
-    switch (type->un.info.kind)
-    {
-        case VOID:
-            Py_RETURN_NONE;
-        case ARRAY:
-        case ADDRESS:
-        case SUBPROGRAM:
-        case ENUMERATION:
-            Py_RETURN_NOTIMPLEMENTED;
-        case BASE:
-        {
-            unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
-            switch (type->un.base.enc)
-            {
-                case DW_ATE_boolean:
-                {
-                    bool b = *(uint8_t*) data;
-                    if (b) Py_RETURN_TRUE;
-                    else Py_RETURN_FALSE;
-                }
-                case DW_ATE_address:
-                case DW_ATE_unsigned:
-                {
-                    unsigned long long u;
-                    if (size == 1) u = *(uint8_t*) data;
-                    else if (size == 2) u = *(uint16_t*) data;
-                    else if (size == 4) u = *(uint32_t*) data;
-                    else if (size == 8) u = *(uint64_t*) data;
-                    else
-                    {
-                        PyErr_SetString(PyExc_TypeError, "Unsupported foreign unsigned integer return value");
-                        return NULL;
-                    }
-                    return PyLong_FromUnsignedLongLong(u);
-                }
-                case DW_ATE_signed:
-                {
-                    long long i;
-                    if (size == 1) i = *(int8_t*) data;
-                    else if (size == 2) i = *(int16_t*) data;
-                    else if (size == 4) i = *(int32_t*) data;
-                    else if (size == 8) i = *(int64_t*) data;
-                    else
-                    {
-                        PyErr_SetString(PyExc_TypeError, "Unsupported foreign integer return value");
-                        return NULL;
-                    }
-                    return PyLong_FromLongLong(i);
-                }
-                case DW_ATE_unsigned_char:
-                case DW_ATE_signed_char:
-                    // Should we make strings or bytes here ???
-                    return PyBytes_FromStringAndSize(data, size);
-                case DW_ATE_float:
-                {
-                    double f;
-                    if (size == 4) f = *(float*) data;
-                    else if (size == 8) f = *(double*) data;
-                    else if (size == 16) f = *(long double*) data;
-                    else
-                    {
-                        PyErr_SetString(PyExc_TypeError, "Unsupported foreign float return value");
-                        return NULL;
-                    }
-                    return PyFloat_FromDouble(f);
-                }
-#ifdef FFI_TARGET_HAS_COMPLEX_TYPE
-                case DW_ATE_complex_float:
-                {
-                    complex double z;
-                    if (size == 8) z = *(complex float*) data;
-                    else if (size == 16) z = *(complex double*) data;
-                    else if (size == 32) z = *(complex long double*) data;
-                    else
-                    {
-                        PyErr_SetString(PyExc_TypeError, "Unsupported foreign complex return value");
-                        return NULL;
-                    }
-                    return PyComplex_FromDoubles(creal(z), cimag(z));
-                }
-#endif
-                default:
-                    PyErr_SetString(PyExc_TypeError, "Unsupported foreign base type return value");
-                    return NULL;
-            }
-        }
-        case COMPOSITE:
-            // TODO : manage struct and unions
-        case SUBRANGE:
-        default:
-            Py_RETURN_NOTIMPLEMENTED;
     }
 }
 
@@ -408,10 +197,10 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
 {
     if (foreignfun_setup_cif(self) < 0) return NULL;
     unsigned narg = self->ff_type->un.subprogram.narg;
-    
+
     if (PySequence_Fast_GET_SIZE(args) != narg)
     {
-        PyErr_Format(PyExc_TypeError, 
+        PyErr_Format(PyExc_TypeError,
                      "'%s' takes exactly %d argument%s (%d given)",
                      self->ff_symname, narg, narg == 1 ? "" : "s",
                      PySequence_Fast_GET_SIZE(args));
@@ -425,7 +214,7 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
         argsize += UNIQTYPE_SIZE_IN_BYTES(arg_type);
     }
 
-    // Using libffi to make calls is probably highly inefficient as each 
+    // Using libffi to make calls is probably highly inefficient as each
     // argument will be pushed to the stack twice.
     void *ff_args[narg];
     char argvals[argsize];
@@ -445,22 +234,22 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
     }
 
     const struct uniqtype *ret_type = self->ff_type->related[0].un.t.ptr;
-    char retval[UNIQTYPE_SIZE_IN_BYTES(ret_type)];
+    unsigned retsize = UNIQTYPE_SIZE_IN_BYTES(ret_type);
+    // Return values can be widened by libffi up to sizeof(ffi_arg)
+    if (sizeof(ffi_arg) > retsize) retsize = sizeof(ffi_arg);
+    char retval[retsize];
 
     ffi_call(self->ff_cif, self->ff_funptr, retval, ff_args);
 
-    return pyobject_from_type(retval, ret_type);
+    PyObject *typdict = ForeignLibraryLoader_GetUniqtypeDict(self->ff_dlloader);
+
+    // FIXME: On big-endian architectures, we need to shift retval pointer if
+    // it has been widened by libffi. For the moment assume we are little-endian
+    return pyobject_from_type(retval, ret_type, typdict);
 }
 
 static PyObject *foreignfun_repr(ForeignFunctionObject *self)
 {
-    if (foreignfun_setup_type(self) < 0)
-    {
-        PyErr_Clear();
-        return PyUnicode_FromFormat(
-            "<foreign function '%s' without type information at %p>",
-            self->ff_symname, self->ff_funptr);
-    }
     const struct uniqtype *type = self->ff_type;
 
     int nret = type->un.subprogram.nret;
@@ -499,7 +288,8 @@ static void foreignfun_dealloc(ForeignFunctionObject *self)
     Py_DECREF(self->ff_dlloader);
     if (self->ff_cif)
     {
-        PyMem_Free(self->ff_cif->arg_types);
+        free_ffi_type(self->ff_cif->rtype);
+        free_ffi_type_arr(self->ff_cif->arg_types);
         PyMem_Free(self->ff_cif);
     }
     Py_TYPE(self)->tp_free((PyObject *) self);
@@ -518,13 +308,27 @@ PyTypeObject ForeignFunction_Type = {
 
 PyObject *ForeignFunction_New(const char *symname, void *funptr, PyObject *dlloader)
 {
+    const struct uniqtype *type = __liballocs_get_alloc_type(funptr);
+    if (!type || !UNIQTYPE_IS_SUBPROGRAM_TYPE(type))
+    {
+        PyErr_Format(PyExc_ImportError, "Retrieving type information for foreign function '%s' failed", symname);
+        return NULL;
+    }
+
     ForeignFunctionObject *obj;
     obj = PyObject_New(ForeignFunctionObject, &ForeignFunction_Type);
     obj->ff_symname = symname;
     obj->ff_funptr = funptr;
-    obj->ff_type = NULL;
+    obj->ff_type = type;
     obj->ff_cif = NULL;
     Py_INCREF(dlloader);
     obj->ff_dlloader = dlloader;
     return (PyObject *) obj;
+}
+
+// Warning : This function does not typecheck the given object
+const struct uniqtype *ForeignFunction_GetType(PyObject *func)
+{
+    ForeignFunctionObject *ffobj = (ForeignFunctionObject *) func;
+    return ffobj->ff_type;
 }

@@ -11,7 +11,8 @@ allocs = Extension('allocs',
                    libraries = ['dl', 'ffi'],
                    library_dirs = [LIBALLOCS_DIR+'/lib'],
                    sources = ['allocsmodule.c', 'foreign_library_loader.c',
-                       'foreign_function.c'],
+                       'foreign_converter.c', 'foreign_function.c',
+                       'foreign_handler.c'],
                    extra_compile_args = ["-O0"])
 
 setup (name = 'Liballocs FFI',

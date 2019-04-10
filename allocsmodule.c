@@ -37,6 +37,9 @@ PyMODINIT_FUNC PyInit_allocs(void)
     if (PyType_Ready(&ForeignFunction_Type) < 0)
         return NULL;
 
+    if (PyType_Ready(&ForeignCompositeType_Type) < 0)
+        return NULL;
+
     PyObject *m = PyModule_Create(&allocsmodule);
     if (m == NULL)
         return NULL;
@@ -45,5 +48,6 @@ PyMODINIT_FUNC PyInit_allocs(void)
     PyModule_AddObject(m, "ForeignLibraryLoader", (PyObject *) &ForeignLibraryLoader_Type);
     Py_INCREF(&ForeignFunction_Type);
     PyModule_AddObject(m, "ForeignFunction", (PyObject *) &ForeignFunction_Type);
+
     return m;
 }

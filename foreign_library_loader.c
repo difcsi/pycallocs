@@ -66,8 +66,63 @@ static int dl_iterate_syms(struct link_map *handle,
 struct add_sym_ctxt
 {
     PyObject *module;
-    PyObject *loader;
+    ForeignLibraryLoaderObject *loader;
 };
+
+static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
+{
+    switch (type->un.info.kind)
+    {
+        case VOID:
+        case BASE:
+        case ENUMERATION: // TODO: handle enums properly
+            return;
+        case ARRAY:
+        case SUBRANGE:
+            add_type_to_module(type->related[0].un.t.ptr, ctxt);
+            return;
+        case ADDRESS:
+            // TODO: check related[1] is always defined
+            add_type_to_module(type->related[1].un.t.ptr, ctxt);
+            return;
+        case SUBPROGRAM:
+        {
+            unsigned nb_subtypes = type->un.subprogram.narg + type->un.subprogram.nret;
+            for (int i = 0; i < nb_subtypes; ++i)
+            {
+                add_type_to_module(type->related[i].un.t.ptr, ctxt);
+            }
+            return;
+        }
+        case COMPOSITE:
+        {
+            PyObject *typedict = ctxt->loader->dl_uniqtype_dict;
+            PyObject *dictkey = PyLong_FromVoidPtr((void *) type);
+            if (PyDict_Contains(typedict, dictkey))
+            {
+                Py_DECREF(dictkey);
+                return;
+            }
+
+            PyObject *handler_type = ForeignHandler_NewCompositeType(type);
+            if (!handler_type) return;
+
+            Py_INCREF(handler_type);
+            PyModule_AddObject(ctxt->module, UNIQTYPE_NAME(type), handler_type);
+            PyDict_SetItem(typedict, dictkey, handler_type);
+            Py_DECREF(dictkey);
+
+            unsigned nb_memb = type->un.composite.nmemb;
+            for (int i = 0; i < nb_memb; ++i)
+            {
+                add_type_to_module(type->related[i].un.t.ptr, ctxt);
+            }
+            return;
+        }
+        default:
+            return; // not handled
+    }
+}
 
 static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
         char *strtab, void *arg)
@@ -81,8 +136,21 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
         && sym->st_shndx != SHN_ABS)
     {
         char *symname = strtab + sym->st_name;
+        // Ignore unamed symbols and reserved names
+        if (symname[0] == '\0' || symname[0] == '_') return 0;
+
         void *obj = (void *)(loadAddress + sym->st_value);
-        PyModule_AddObject(ctxt->module, symname, ForeignFunction_New(symname, obj, ctxt->loader));
+
+        PyObject *func = ForeignFunction_New(symname, obj, (PyObject *) ctxt->loader);
+        if (!func)
+        {
+            // Ignore functions that fail to be loaded
+            PyErr_Clear();
+            return 0;
+        }
+
+        PyModule_AddObject(ctxt->module, symname, func);
+        add_type_to_module(ForeignFunction_GetType(func), ctxt);
     }
 
     return 0;
@@ -97,7 +165,7 @@ static PyObject *foreignlibloader_exec(ForeignLibraryLoaderObject *self, PyObjec
 {
     struct add_sym_ctxt ctxt;
     ctxt.module = module;
-    ctxt.loader = (PyObject *) self;
+    ctxt.loader = self;
 
     dl_iterate_syms(self->dl_handle, add_sym_to_module, &ctxt);
     Py_RETURN_NONE;
@@ -144,3 +212,8 @@ PyTypeObject ForeignLibraryLoader_Type = {
     .tp_traverse = (traverseproc) foreignlibloader_traverse,
     .tp_clear = (inquiry) foreignlibloader_clear,
 };
+
+PyObject *ForeignLibraryLoader_GetUniqtypeDict(PyObject *self)
+{
+    return ((ForeignLibraryLoaderObject *)self)->dl_uniqtype_dict;
+}
