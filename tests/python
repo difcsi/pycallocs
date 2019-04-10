@@ -1,0 +1,4 @@
+#!/bin/bash
+
+. ../venv/bin/activate
+LD_PRELOAD=../../liballocs/lib/liballocs_preload.so python3 $*

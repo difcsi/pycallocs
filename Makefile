@@ -5,6 +5,9 @@ all: build install
 build: allocsmodule.c setup.py
 	$(PYTHON) setup.py build
 
+tests: install
+	make -C tests
+
 install: build venv
 	. venv/bin/activate && $(PYTHON) setup.py install
 
@@ -12,6 +15,6 @@ venv:
 	virtualenv -p $(PYTHON) venv
 
 clean:
-	rm -rf venv build
+	rm -rf venv build *.pyc
 
-.PHONY: all clean install
+.PHONY: all build clean install tests

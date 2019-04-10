@@ -1,0 +1,37 @@
+#!/bin/bash
+
+success=0
+nbTests=0
+
+for file in $@
+do
+    t=`basename $file .py`
+
+    ((++nbTests))
+    echo -n -e "Testing \e[1m$t\e[0m: "
+
+    if ./python $file > out 2> out_err
+    then
+        if [ -f $t.out ]
+        then
+            if ! diff out $t.out
+            then
+                echo -e "\e[1;31mOutput differ from expected\e[0m"
+                continue
+            else
+                echo -e "\e[1;32mSuccess\e[0m"
+                ((++success))
+            fi
+        else
+            echo -e "\e[1;32mSuccess (no output check)\e[0m"
+            ((++success))
+        fi
+    else
+        echo -e "\e[1;35mFailure in execution\e[0m"
+        cat out_err
+    fi
+    rm out out_err
+done
+
+echo -e "\e[1;34mResults: $success success(es) out of $nbTests\e[0m"
+
