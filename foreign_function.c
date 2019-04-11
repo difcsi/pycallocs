@@ -225,7 +225,7 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
         PyObject *py_arg = PySequence_Fast_GET_ITEM(args, i);
 
         const struct uniqtype *arg_type = self->ff_type->related[i+1].un.t.ptr;
-        if (store_pyobject_as_type(py_arg, cur_arg, arg_type))
+        if (store_pyobject_as_type(py_arg, cur_arg, arg_type, self->ff_dlloader))
         {
             return NULL;
         }
@@ -241,11 +241,9 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
 
     ffi_call(self->ff_cif, self->ff_funptr, retval, ff_args);
 
-    PyObject *typdict = ForeignLibraryLoader_GetUniqtypeDict(self->ff_dlloader);
-
     // FIXME: On big-endian architectures, we need to shift retval pointer if
     // it has been widened by libffi. For the moment assume we are little-endian
-    return pyobject_from_type(retval, ret_type, typdict);
+    return pyobject_from_type(retval, ret_type, self->ff_dlloader);
 }
 
 static PyObject *foreignfun_repr(ForeignFunctionObject *self)

@@ -213,7 +213,11 @@ PyTypeObject ForeignLibraryLoader_Type = {
     .tp_clear = (inquiry) foreignlibloader_clear,
 };
 
-PyObject *ForeignLibraryLoader_GetUniqtypeDict(PyObject *self)
+PyTypeObject *ForeignLibraryLoader_GetPyTypeForUniqtype(PyObject *self, const struct uniqtype *type)
 {
-    return ((ForeignLibraryLoaderObject *)self)->dl_uniqtype_dict;
+    PyObject *typdict = ((ForeignLibraryLoaderObject *)self)->dl_uniqtype_dict;
+    PyObject *typkey = PyLong_FromVoidPtr((void *) type);
+    PyObject *ptype = PyDict_GetItem(typdict, typkey);
+    Py_DECREF(typkey);
+    return (PyTypeObject *) ptype;
 }

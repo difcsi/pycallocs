@@ -55,7 +55,7 @@ static PyObject *foreigncomposite_getfield(ForeignHandlerObject *self, struct un
 static int foreigncomposite_setfield(ForeignHandlerObject *self, PyObject *value, struct uniqtype_rel_info *field_info)
 {
     void *field = self->fho_ptr + field_info->un.memb.off;
-    return store_pyobject_as_type(value, field, field_info->un.memb.ptr);
+    return store_pyobject_as_type(value, field, field_info->un.memb.ptr, NULL);
 }
 
 /*static int foreigncomposite_init(ForeignHandlerObject *self, PyObject *args, PyObject *kwds)
@@ -146,4 +146,10 @@ PyObject *ForeignHandler_FromDataAndType(void *data, PyTypeObject *type)
         memcpy(obj->fho_ptr, data, type->tp_itemsize);
     }
     return (PyObject *) obj;
+}
+
+void *ForeignHandler_GetDataAddr(PyObject *self)
+{
+    ForeignHandlerObject *obj = (ForeignHandlerObject *) self;
+    return obj->fho_ptr;
 }

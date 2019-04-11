@@ -12,9 +12,9 @@ struct hello_world make_hw(int h, float w)
     return hw;
 }
 
-void print_hw(struct hello_world *hw)
+void print_hw(struct hello_world hw)
 {
-    printf("Hello: %d, World: %f", hw->hello, hw->world);
+    printf("Hello: %d, World: %.2f\n", hw.hello, hw.world);
 }
 
 void compl_hw(struct hello_world *hw)
@@ -38,4 +38,9 @@ union quantum_cat make_alive(double f)
 {
     union quantum_cat qc = { alive: f };
     return qc;
+}
+
+void print_cat(union quantum_cat qc)
+{
+    printf("Dead (%d) or alive (%.2f)\n", qc.dead, qc.alive);
 }

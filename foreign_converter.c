@@ -50,12 +50,12 @@ static PyObject *char_to_long(PyObject* c)
 }
 
 #define STORE_AS(val, type) do {\
-    type *tmem = mem; \
-    *tmem = (type)(val); \
+    type *tdest = dest; \
+    *tdest = (type)(val); \
     return 0; \
 } while(0)
 
-int store_pyobject_as_type(PyObject *obj, void *mem, const struct uniqtype *type)
+int store_pyobject_as_type(PyObject *obj, void *dest, const struct uniqtype *type, PyObject *dlloader)
 {
     switch (type->un.info.kind)
     {
@@ -175,8 +175,23 @@ int store_pyobject_as_type(PyObject *obj, void *mem, const struct uniqtype *type
         }
         case COMPOSITE:
         {
-            // Check that types are compatible
-            // Copy data
+            if (!dlloader) return -1; // TODO: temporary
+            PyTypeObject *ptype = ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, type);
+            assert(ptype->tp_itemsize == UNIQTYPE_SIZE_IN_BYTES(type));
+            if (!ptype)
+            {
+                // We should only be here if the composite type importation have failed
+                PyErr_SetString(PyExc_TypeError, "Unsupported foreign composite parameter");
+                return -1;
+            }
+            if (!PyObject_TypeCheck(obj, ptype))
+            {
+                PyErr_Format(PyExc_TypeError, "expected value of type %s, got %s",
+                        ptype->tp_name, Py_TYPE(obj)->tp_name);
+                return -1;
+            }
+            memcpy(dest, ForeignHandler_GetDataAddr(obj), ptype->tp_itemsize);
+            return 0;
         }
         case SUBRANGE:
         default:
@@ -184,7 +199,7 @@ int store_pyobject_as_type(PyObject *obj, void *mem, const struct uniqtype *type
     }
 }
 
-PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *typdict)
+PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *dlloader)
 {
     switch (type->un.info.kind)
     {
@@ -274,17 +289,15 @@ PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *
         }
         case COMPOSITE:
         {
-            if (!typdict) return NULL; // TODO: temporary
-            PyObject *typkey = PyLong_FromVoidPtr((void *) type);
-            PyObject *ptype = PyDict_GetItem(typdict, typkey);
-            Py_DECREF(typkey);
+            if (!dlloader) return NULL; // TODO: temporary
+            PyTypeObject *ptype = ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, type);
             if (!ptype)
             {
                 // We should only be here if the composite type importation have failed
                 PyErr_SetString(PyExc_TypeError, "Unsupported foreign composite return value");
                 return NULL;
             }
-            return ForeignHandler_FromDataAndType(data, (PyTypeObject *) ptype);
+            return ForeignHandler_FromDataAndType(data, ptype);
         }
         case SUBRANGE:
         default:
