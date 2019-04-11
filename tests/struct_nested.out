@@ -1,0 +1,4 @@
+(outstruct){a: (instruct){data1: 1, data2: 2}, b: (instruct){data1: 3, data2: 4}}
+(instruct){data1: 1, data2: 2}
+(instruct){data1: 5, data2: 6}
+{ { 1, 2 }, { 3, 4 } }

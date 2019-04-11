@@ -3,6 +3,7 @@
 typedef struct {
     PyObject_HEAD
     void *fho_ptr;
+    PyObject *fho_allocator;
 } ForeignHandlerObject;
 
 static PyObject *foreignhandler_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
@@ -14,18 +15,21 @@ static PyObject *foreignhandler_new(PyTypeObject *type, PyObject *args, PyObject
         // Python programmer do not expect uninitialized values
         // => zero-initialize the data
         memset(obj->fho_ptr, 0, type->tp_itemsize);
+        obj->fho_allocator = (PyObject *) obj;
     }
     return (PyObject *) obj;
 }
 
 static void foreignhandler_dealloc(ForeignHandlerObject *self)
 {
-    PyMem_Free(self->fho_ptr);
+    if (self->fho_allocator == (PyObject *) self) PyMem_Free(self->fho_ptr);
+    else Py_DECREF(self->fho_allocator);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
 typedef struct {
     PyTypeObject t;
+    PyObject *dlloader;
     PyGetSetDef memb[];
 } ForeignCompositeTypeObject;
 
@@ -33,6 +37,12 @@ static PyObject *foreigntype_disabled_new(PyTypeObject *type, PyObject *args, Py
 {
     PyErr_SetString(PyExc_TypeError, "Cannot create foreign type from Python");
     return NULL;
+}
+
+static void foreigntype_dealloc(ForeignCompositeTypeObject *self)
+{
+    Py_DECREF(self->dlloader);
+    PyType_Type.tp_dealloc((PyObject *) self);
 }
 
 PyTypeObject ForeignCompositeType_Type = {
@@ -44,18 +54,21 @@ PyTypeObject ForeignCompositeType_Type = {
     .tp_itemsize = sizeof(PyGetSetDef),
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
     .tp_new = foreigntype_disabled_new,
+    .tp_dealloc = (destructor) foreigntype_dealloc,
 };
 
 static PyObject *foreigncomposite_getfield(ForeignHandlerObject *self, struct uniqtype_rel_info *field_info)
 {
     void *field = self->fho_ptr + field_info->un.memb.off;
-    return pyobject_from_type(field, field_info->un.memb.ptr, NULL);
+    PyObject *dlloader = ((ForeignCompositeTypeObject *) Py_TYPE(self))->dlloader;
+    return pyobject_from_type(field, field_info->un.memb.ptr, dlloader, self->fho_allocator);
 }
 
 static int foreigncomposite_setfield(ForeignHandlerObject *self, PyObject *value, struct uniqtype_rel_info *field_info)
 {
     void *field = self->fho_ptr + field_info->un.memb.off;
-    return store_pyobject_as_type(value, field, field_info->un.memb.ptr, NULL);
+    PyObject *dlloader = ((ForeignCompositeTypeObject *) Py_TYPE(self))->dlloader;
+    return store_pyobject_as_type(value, field, field_info->un.memb.ptr, dlloader);
 }
 
 /*static int foreigncomposite_init(ForeignHandlerObject *self, PyObject *args, PyObject *kwds)
@@ -91,7 +104,7 @@ static PyObject *foreigncomposite_repr(ForeignHandlerObject *self)
     return repr;
 }
 
-PyObject *ForeignHandler_NewCompositeType(const struct uniqtype *type)
+PyObject *ForeignHandler_NewCompositeType(const struct uniqtype *type, PyObject *dlloader)
 {
     if (!UNIQTYPE_IS_COMPOSITE_TYPE(type)) return NULL;
 
@@ -132,18 +145,34 @@ PyObject *ForeignHandler_NewCompositeType(const struct uniqtype *type)
         return NULL;
     }
 
+    Py_INCREF(dlloader);
+    ftype->dlloader = dlloader;
+
     return (PyObject *) ftype;
 }
 
 // Borrow everything from the caller, type must be compatible with
 // ForeignHandlerObject layout
-PyObject *ForeignHandler_FromDataAndType(void *data, PyTypeObject *type)
+PyObject *ForeignHandler_FromData(void *data, PyTypeObject *type)
 {
     ForeignHandlerObject *obj = PyObject_New(ForeignHandlerObject, type);
     if (obj)
     {
         obj->fho_ptr = PyMem_Malloc(type->tp_itemsize);
         memcpy(obj->fho_ptr, data, type->tp_itemsize);
+        obj->fho_allocator = (PyObject *) obj;
+    }
+    return (PyObject *) obj;
+}
+
+PyObject *ForeignHandler_FromPtr(void *ptr, PyTypeObject *type, PyObject *allocator)
+{
+    ForeignHandlerObject *obj = PyObject_New(ForeignHandlerObject, type);
+    if (obj)
+    {
+        obj->fho_ptr = ptr;
+        Py_INCREF(allocator);
+        obj->fho_allocator = allocator;
     }
     return (PyObject *) obj;
 }

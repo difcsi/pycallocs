@@ -243,7 +243,7 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
 
     // FIXME: On big-endian architectures, we need to shift retval pointer if
     // it has been widened by libffi. For the moment assume we are little-endian
-    return pyobject_from_type(retval, ret_type, self->ff_dlloader);
+    return pyobject_from_type(retval, ret_type, self->ff_dlloader, NULL);
 }
 
 static PyObject *foreignfun_repr(ForeignFunctionObject *self)

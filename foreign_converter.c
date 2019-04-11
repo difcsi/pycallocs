@@ -175,7 +175,6 @@ int store_pyobject_as_type(PyObject *obj, void *dest, const struct uniqtype *typ
         }
         case COMPOSITE:
         {
-            if (!dlloader) return -1; // TODO: temporary
             PyTypeObject *ptype = ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, type);
             assert(ptype->tp_itemsize == UNIQTYPE_SIZE_IN_BYTES(type));
             if (!ptype)
@@ -199,7 +198,7 @@ int store_pyobject_as_type(PyObject *obj, void *dest, const struct uniqtype *typ
     }
 }
 
-PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *dlloader)
+PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *dlloader, PyObject *allocator)
 {
     switch (type->un.info.kind)
     {
@@ -289,7 +288,6 @@ PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *
         }
         case COMPOSITE:
         {
-            if (!dlloader) return NULL; // TODO: temporary
             PyTypeObject *ptype = ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, type);
             if (!ptype)
             {
@@ -297,12 +295,12 @@ PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *
                 PyErr_SetString(PyExc_TypeError, "Unsupported foreign composite return value");
                 return NULL;
             }
-            return ForeignHandler_FromDataAndType(data, ptype);
+            if (allocator) return ForeignHandler_FromPtr(data, ptype, allocator);
+            return ForeignHandler_FromData(data, ptype);
         }
         case SUBRANGE:
         default:
             Py_RETURN_NOTIMPLEMENTED;
     }
 }
-
 

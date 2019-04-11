@@ -104,7 +104,7 @@ static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt*
                 return;
             }
 
-            PyObject *handler_type = ForeignHandler_NewCompositeType(type);
+            PyObject *handler_type = ForeignHandler_NewCompositeType(type, (PyObject *) ctxt->loader);
             if (!handler_type) return;
 
             Py_INCREF(handler_type);
