@@ -12,9 +12,6 @@ static PyObject *foreignhandler_new(PyTypeObject *type, PyObject *args, PyObject
     if (obj)
     {
         obj->fho_ptr = PyMem_Malloc(type->tp_itemsize);
-        // Python programmer do not expect uninitialized values
-        // => zero-initialize the data
-        memset(obj->fho_ptr, 0, type->tp_itemsize);
         obj->fho_allocator = (PyObject *) obj;
     }
     return (PyObject *) obj;
@@ -71,10 +68,16 @@ static int foreigncomposite_setfield(ForeignHandlerObject *self, PyObject *value
     return store_pyobject_as_type(value, field, field_info->un.memb.ptr, dlloader);
 }
 
-/*static int foreigncomposite_init(ForeignHandlerObject *self, PyObject *args, PyObject *kwds)
+static int foreigncomposite_init(ForeignHandlerObject *self, PyObject *args, PyObject *kwds)
 {
     // Maybe we could have a convenient initializer
-}*/
+
+    // Python programmer do not expect uninitialized values
+    // => zero-initialize the data
+    memset(self->fho_ptr, 0, Py_TYPE(self)->tp_itemsize);
+
+    return 0;
+}
 
 static PyObject *foreigncomposite_repr(ForeignHandlerObject *self)
 {
@@ -135,7 +138,7 @@ PyObject *ForeignHandler_NewCompositeType(const struct uniqtype *type, PyObject 
         .tp_new = foreignhandler_new,
         .tp_dealloc = (destructor) foreignhandler_dealloc,
         .tp_getset = ftype->memb,
-        //.tp_init = foreigncomposite_init,
+        .tp_init = (initproc) foreigncomposite_init,
         .tp_repr = (reprfunc) foreigncomposite_repr,
     };
 

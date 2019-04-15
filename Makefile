@@ -2,7 +2,7 @@ PYTHON = python3
 
 all: build install
 
-build: allocsmodule.c setup.py
+build:
 	$(PYTHON) setup.py build
 
 tests: install

@@ -10,7 +10,7 @@ allocs = Extension('allocs',
                    include_dirs = [LIBALLOCS_DIR+'/include'],
                    libraries = ['dl', 'ffi'],
                    library_dirs = [LIBALLOCS_DIR+'/lib'],
-                   sources = ['allocsmodule.c', 'foreign_library_loader.c',
+                   sources = ['allocs_module.c', 'foreign_library_loader.c',
                        'foreign_converter.c', 'foreign_function.c',
                        'foreign_handler.c'],
                    extra_compile_args = ["-O0"])
