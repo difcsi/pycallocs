@@ -64,8 +64,27 @@ int store_pyobject_as_type(PyObject *obj, void *dest, const struct uniqtype *typ
             PyErr_SetString(PyExc_TypeError, "This foreign function has a void argument, "
                 "this should never happen, please consider making a bug report");
             return -1;
-        case ARRAY:
         case ADDRESS:
+        {
+            // None -> NULL
+            if (obj == Py_None) STORE_AS(NULL, void *);
+
+            // Special treatment for pointer to composite
+            // as composite handlers hold pointer to data
+            const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
+            if (pointee_type->un.info.kind == COMPOSITE)
+            {
+                PyTypeObject *ptype =
+                    ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, pointee_type);
+                if (ptype && PyObject_TypeCheck(obj, ptype))
+                {
+                    STORE_AS(ForeignHandler_GetDataAddr(obj), void *);
+                }
+            }
+
+            // TODO : General case
+        }
+        case ARRAY:
         case SUBPROGRAM:
         case ENUMERATION:
             // TODO
@@ -176,7 +195,6 @@ int store_pyobject_as_type(PyObject *obj, void *dest, const struct uniqtype *typ
         case COMPOSITE:
         {
             PyTypeObject *ptype = ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, type);
-            assert(ptype->tp_itemsize == UNIQTYPE_SIZE_IN_BYTES(type));
             if (!ptype)
             {
                 // We should only be here if the composite type importation have failed
@@ -204,8 +222,29 @@ PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *
     {
         case VOID:
             Py_RETURN_NONE;
-        case ARRAY:
         case ADDRESS:
+        {
+            void *ptr = *(void **) data; // Get the pointer stored in data
+            // NULL -> None
+            if (!ptr) Py_RETURN_NONE;
+            
+            // Special case for pointer to composite 
+            const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
+            if (pointee_type->un.info.kind == COMPOSITE)
+            {
+                PyTypeObject *ptype =
+                    ForeignLibraryLoader_GetPyTypeForUniqtype(dlloader, pointee_type);
+                if (ptype)
+                {
+                    // Use None as the allocator as the object lifetime
+                    // is not linked to the pointer holder's lifetime.
+                    return ForeignHandler_FromPtr(ptr, ptype, Py_None);
+                }
+            }
+
+            // TODO : General case (probably shared with arrays)
+        }
+        case ARRAY:
         case SUBPROGRAM:
         case ENUMERATION:
             Py_RETURN_NOTIMPLEMENTED;
