@@ -1,1 +1,7 @@
+(hello_world){hello: 0, world: 0.0}
 (hello_world){hello: 42, world: 9.99}
+(hello_world){hello: 1, world: 1.0}
+(hello_world){hello: 2, world: nan}
+(hello_world){hello: 5, world: 0.0}
+(hello_world){hello: 5, world: inf}
+(hello_world){hello: 5, world: 0.0}

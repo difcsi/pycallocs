@@ -10,7 +10,7 @@ o.a.data2 = 2
 b = m.instruct()
 b.data1 = 3
 b.data2 = 6
-o.b = b
+o.b.__init__(b) # <- TODO: Maybe add an alias method name for this
 o.b.data2 = 4
 
 b.data1 = 5

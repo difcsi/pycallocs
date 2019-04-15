@@ -1,4 +1,5 @@
 #include "foreign_library.h"
+#include <stdbool.h>
 
 typedef struct {
     PyObject_HEAD
@@ -68,15 +69,84 @@ static int foreigncomposite_setfield(ForeignHandlerObject *self, PyObject *value
     return store_pyobject_as_type(value, field, field_info->un.memb.ptr, dlloader);
 }
 
-static int foreigncomposite_init(ForeignHandlerObject *self, PyObject *args, PyObject *kwds)
+static int foreigncomposite_init(ForeignHandlerObject *self, PyObject *args, PyObject *kwargs)
 {
-    // Maybe we could have a convenient initializer
+    ForeignCompositeTypeObject *type = (ForeignCompositeTypeObject *) Py_TYPE(self);
 
-    // Python programmer do not expect uninitialized values
-    // => zero-initialize the data
-    memset(self->fho_ptr, 0, Py_TYPE(self)->tp_itemsize);
+    unsigned nargs = PyTuple_GET_SIZE(args);
+    unsigned nkwargs = kwargs ? PyDict_Size(kwargs) : 0;
 
-    return 0;
+    // Default initialization => zero initialize the whole structure
+    if (nargs == 0 && nkwargs == 0)
+    {
+        memset(self->fho_ptr, 0, type->t.tp_itemsize);
+        return 0;
+    }
+
+    // Copy if 1 positional same type struct argument and no keyword argument
+    if (nargs == 1 && nkwargs == 0)
+    {
+        PyObject *arg = PyTuple_GET_ITEM(args, 0);
+        if (PyObject_TypeCheck(arg, (PyTypeObject *) type))
+        {
+            ForeignHandlerObject *other = (ForeignHandlerObject *) arg;
+
+            // Checking pointer equality is enough for checking aliasing
+            if (self->fho_ptr == other->fho_ptr)
+            {
+                PyErr_SetString(PyExc_ValueError, "Trying to copy inside yourself");
+                return -1;
+            }
+
+            memcpy(self->fho_ptr, other->fho_ptr, type->t.tp_itemsize);
+            return 0;
+        }
+    }
+
+    // Else we initialize fields in order or by taking a keyword argument
+    unsigned initialized_fields = 0;
+    for (unsigned i = 0 ; type->memb[i].name ; ++i)
+    {
+        // Direct call to setfield to also copy nested structs
+        if (i < nargs) // Use positional arguments first
+        {
+            PyObject *value = PyTuple_GET_ITEM(args, i);
+            if (foreigncomposite_setfield(self, value, type->memb[i].closure) < 0)
+                return -1;
+            ++initialized_fields;
+        }
+        else
+        {
+            PyObject *arg = kwargs ? PyDict_GetItemString(kwargs, type->memb[i].name) : NULL;
+            if (arg)
+            {
+                if (foreigncomposite_setfield(self, arg, type->memb[i].closure) < 0)
+                    return -1;
+                ++initialized_fields;
+            }
+            else
+            {
+                // No initialization data for the field => zero initialization
+                struct uniqtype_rel_info *field_info = type->memb[i].closure;
+                void *field = self->fho_ptr + field_info->un.memb.off;
+                memset(field, 0, UNIQTYPE_SIZE_IN_BYTES(field_info->un.memb.ptr));
+            }
+        }
+    }
+
+    if (initialized_fields <= nargs + nkwargs) return 0;
+    else if (initialized_fields <= nargs)
+    {
+        PyErr_SetString(PyExc_TypeError, "Invalid keyword arguments");
+        return -1;
+    }
+    else
+    {
+        PyErr_Format(PyExc_ValueError,
+                "Too many positional arguments (there are only %d fields)",
+                initialized_fields);
+        return -1;
+    }
 }
 
 static PyObject *foreigncomposite_repr(ForeignHandlerObject *self)
@@ -119,12 +189,14 @@ PyObject *ForeignHandler_NewCompositeType(const struct uniqtype *type, PyObject 
 
     for (int i_field = 0 ; i_field < nb_fields ; ++i_field)
     {
+        const struct uniqtype_rel_info *field_info = &type->related[i_field];
+        bool nested_field = field_info->un.memb.ptr->un.info.kind == COMPOSITE;
         ftype->memb[i_field] = (PyGetSetDef){
             .name = (char *) field_names[i_field],
             .get = (getter) foreigncomposite_getfield,
-            .set = (setter) foreigncomposite_setfield,
+            .set = nested_field ? NULL : (setter) foreigncomposite_setfield,
             .doc = NULL,
-            .closure = (void *) &type->related[i_field]
+            .closure = (void *) field_info,
         };
     }
     ftype->memb[nb_fields] = (PyGetSetDef){NULL};
