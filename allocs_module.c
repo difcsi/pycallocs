@@ -32,15 +32,18 @@ static struct PyModuleDef allocsmodule =
 PyMODINIT_FUNC PyInit_allocs(void)
 {
     if (PyType_Ready(&ForeignLibraryLoader_Type) < 0) return NULL;
+    if (PyType_Ready(&ForeignProxy_Type) < 0) return NULL;
     if (PyType_Ready(&ForeignType_Type) < 0) return NULL;
     if (PyType_Ready(&ForeignFunction_Type) < 0) return NULL;
-    if (PyType_Ready(&ForeignComposite_HandlerMetatype) < 0) return NULL;
+    if (PyType_Ready(&ForeignComposite_ProxyMetatype) < 0) return NULL;
 
     PyObject *m = PyModule_Create(&allocsmodule);
     if (m == NULL) return NULL;
 
     Py_INCREF(&ForeignLibraryLoader_Type);
     PyModule_AddObject(m, "ForeignLibraryLoader", (PyObject *) &ForeignLibraryLoader_Type);
+    Py_INCREF(&ForeignProxy_Type);
+    PyModule_AddObject(m, "ForeignProxy", (PyObject *) &ForeignProxy_Type);
     Py_INCREF(&ForeignType_Type);
     PyModule_AddObject(m, "ForeignType", (PyObject *) &ForeignType_Type);
     Py_INCREF(&ForeignFunction_Type);

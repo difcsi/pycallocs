@@ -65,9 +65,6 @@ int void_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
     return 0;
 }
 
-ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type);
-ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type);
-
 // Call the good specialization of ForeignType
 static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
 {
