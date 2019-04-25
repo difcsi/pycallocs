@@ -6,26 +6,31 @@
 
 // All the functions declared here do not NULL check or typecheck their arguments
 
-int store_pyobject_as_type(PyObject *obj, void *dest, const struct uniqtype *type, PyObject *dlloader);
+typedef struct ForeignTypeObject {
+    PyObject_HEAD
+    const struct uniqtype* ft_type;
 
-// Data is copied into the created Python object except if allocator is not
-// NULL. These copies are shallow (i.e. pointers or arrays still refer to their
-// original pointee values).
-// With allocator set to non-NULL, struct handlers will use the data pointer as
-// a reference for their content.
-PyObject *pyobject_from_type(void *data, const struct uniqtype *type, PyObject *dlloader, PyObject *allocator);
+    PyObject *ft_constructor; // Callable constructor (may be a class)
 
-PyTypeObject ForeignLibraryLoader_Type;
-PyTypeObject *ForeignLibraryLoader_GetPyTypeForUniqtype(PyObject *self, const struct uniqtype *type);
+    // Data is copied into the created Python object except if allocator is not
+    // NULL. These copies are shallow (i.e. pointers or arrays still refer to their
+    // original pointee values).
+    // With allocator set to non-NULL, struct handlers will use the data pointer as
+    // a reference for their content.
+    PyObject *(*ft_getfrom)(void *data, struct ForeignTypeObject *type, PyObject *allocator);
 
-PyTypeObject ForeignFunction_Type;
+    int (*ft_storeinto)(PyObject *obj, void *dest, struct ForeignTypeObject *type);
+} ForeignTypeObject;
+
+extern PyTypeObject ForeignType_Type;
+ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type);
+
+extern PyTypeObject ForeignLibraryLoader_Type;
+
+extern PyTypeObject ForeignFunction_Type;
 PyObject *ForeignFunction_New(const char *symname, void *funptr, PyObject *dlloader);
 const struct uniqtype *ForeignFunction_GetType(PyObject *func);
 
-PyTypeObject ForeignCompositeType_Type;
-PyObject *ForeignHandler_NewCompositeType(const struct uniqtype *type, PyObject *dlloader);
-PyObject *ForeignHandler_FromData(void *data, PyTypeObject *type);
-PyObject *ForeignHandler_FromPtr(void *ptr, PyTypeObject *type, PyObject *allocator);
-void *ForeignHandler_GetDataAddr(PyObject *self);
+extern PyTypeObject ForeignComposite_HandlerMetatype;
 
 #endif

@@ -6,25 +6,10 @@
 typedef struct {
     PyObject_HEAD
     struct link_map *dl_handle;
-    PyObject *dl_uniqtype_dict; // Map uniqtype's to PyTypeObject's
 } ForeignLibraryLoaderObject;
-
-static int foreignlibloader_traverse(ForeignLibraryLoaderObject *self, visitproc visit, void *arg)
-{
-    Py_VISIT(self->dl_uniqtype_dict);
-    return 0;
-}
-
-static int foreignlibloader_clear(ForeignLibraryLoaderObject *self)
-{
-    Py_CLEAR(self->dl_uniqtype_dict);
-    return 0;
-}
 
 static void foreignlibloader_dealloc(ForeignLibraryLoaderObject *self)
 {
-    PyObject_GC_UnTrack(self);
-    Py_XDECREF(self->dl_uniqtype_dict);
     if (self->dl_handle) dlclose(self->dl_handle);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
@@ -75,6 +60,27 @@ static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt*
     {
         case VOID:
         case BASE:
+        case COMPOSITE:
+        {
+            const char *type_name = UNIQTYPE_NAME(type);
+            // TODO: Manage name clashes
+            if (PyObject_HasAttrString(ctxt->module, type_name)) return;
+
+            ForeignTypeObject *ptype = ForeignType_GetOrCreate(type);
+            if (!ptype) return;
+
+            PyModule_AddObject(ctxt->module, type_name, (PyObject *) ptype);
+
+            if (type->un.info.kind == COMPOSITE)
+            {
+                unsigned nb_memb = type->un.composite.nmemb;
+                for (int i = 0; i < nb_memb; ++i)
+                {
+                    add_type_to_module(type->related[i].un.t.ptr, ctxt);
+                }
+            }
+            return;
+        }
         case ENUMERATION: // TODO: handle enums properly
             return;
         case ARRAY:
@@ -89,31 +95,6 @@ static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt*
         {
             unsigned nb_subtypes = type->un.subprogram.narg + type->un.subprogram.nret;
             for (int i = 0; i < nb_subtypes; ++i)
-            {
-                add_type_to_module(type->related[i].un.t.ptr, ctxt);
-            }
-            return;
-        }
-        case COMPOSITE:
-        {
-            PyObject *typedict = ctxt->loader->dl_uniqtype_dict;
-            PyObject *dictkey = PyLong_FromVoidPtr((void *) type);
-            if (PyDict_Contains(typedict, dictkey))
-            {
-                Py_DECREF(dictkey);
-                return;
-            }
-
-            PyObject *handler_type = ForeignHandler_NewCompositeType(type, (PyObject *) ctxt->loader);
-            if (!handler_type) return;
-
-            Py_INCREF(handler_type);
-            PyModule_AddObject(ctxt->module, UNIQTYPE_NAME(type), handler_type);
-            PyDict_SetItem(typedict, dictkey, handler_type);
-            Py_DECREF(dictkey);
-
-            unsigned nb_memb = type->un.composite.nmemb;
-            for (int i = 0; i < nb_memb; ++i)
             {
                 add_type_to_module(type->related[i].un.t.ptr, ctxt);
             }
@@ -194,7 +175,6 @@ static int foreignlibloader_init(ForeignLibraryLoaderObject* self, PyObject *arg
         return -1;
     }
 
-    self->dl_uniqtype_dict = PyDict_New();
     return 0;
 }
 
@@ -206,18 +186,8 @@ PyTypeObject ForeignLibraryLoader_Type = {
     .tp_itemsize = 0,
     .tp_new = PyType_GenericNew,
     .tp_init = (initproc) foreignlibloader_init,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
     .tp_methods = foreignlibloader_methods,
     .tp_dealloc = (destructor) foreignlibloader_dealloc,
-    .tp_traverse = (traverseproc) foreignlibloader_traverse,
-    .tp_clear = (inquiry) foreignlibloader_clear,
 };
 
-PyTypeObject *ForeignLibraryLoader_GetPyTypeForUniqtype(PyObject *self, const struct uniqtype *type)
-{
-    PyObject *typdict = ((ForeignLibraryLoaderObject *)self)->dl_uniqtype_dict;
-    PyObject *typkey = PyLong_FromVoidPtr((void *) type);
-    PyObject *ptype = PyDict_GetItem(typdict, typkey);
-    Py_DECREF(typkey);
-    return (PyTypeObject *) ptype;
-}

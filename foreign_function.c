@@ -225,15 +225,21 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
         PyObject *py_arg = PySequence_Fast_GET_ITEM(args, i);
 
         const struct uniqtype *arg_type = self->ff_type->related[i+1].un.t.ptr;
-        if (store_pyobject_as_type(py_arg, cur_arg, arg_type, self->ff_dlloader))
+        ForeignTypeObject *arg_ftype = ForeignType_GetOrCreate(arg_type);
+        // ^ These lookups should be precomputed with cif initialization
+        if (!arg_ftype || arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
         {
             return NULL;
         }
+        Py_DECREF(arg_ftype);
         ff_args[i] = cur_arg;
         cur_arg += UNIQTYPE_SIZE_IN_BYTES(arg_type);
     }
 
     const struct uniqtype *ret_type = self->ff_type->related[0].un.t.ptr;
+    ForeignTypeObject *ret_ftype = ForeignType_GetOrCreate(ret_type);
+    if (!ret_ftype) return NULL;
+
     unsigned retsize = UNIQTYPE_SIZE_IN_BYTES(ret_type);
     // Return values can be widened by libffi up to sizeof(ffi_arg)
     if (sizeof(ffi_arg) > retsize) retsize = sizeof(ffi_arg);
@@ -243,7 +249,9 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
 
     // FIXME: On big-endian architectures, we need to shift retval pointer if
     // it has been widened by libffi. For the moment assume we are little-endian
-    return pyobject_from_type(retval, ret_type, self->ff_dlloader, NULL);
+    PyObject *retobj = ret_ftype->ft_getfrom(retval, ret_ftype, NULL);
+    Py_DECREF(ret_ftype);
+    return retobj;
 }
 
 static PyObject *foreignfun_repr(ForeignFunctionObject *self)
