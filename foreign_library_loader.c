@@ -111,7 +111,7 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
     struct add_sym_ctxt *ctxt = arg;
 
     if ((ELF64_ST_TYPE(sym->st_info) == STT_FUNC
-        /*|| ELF64_ST_TYPE(sym->st_info) == STT_OBJECT*/)
+        || ELF64_ST_TYPE(sym->st_info) == STT_OBJECT)
         && ELF64_ST_BIND(sym->st_info) == STB_GLOBAL
         && sym->st_shndx != SHN_UNDEF
         && sym->st_shndx != SHN_ABS)
@@ -120,18 +120,28 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
         // Ignore unamed symbols and reserved names
         if (symname[0] == '\0' || symname[0] == '_') return 0;
 
-        void *obj = (void *)(loadAddress + sym->st_value);
+        void *data = (void *)(loadAddress + sym->st_value);
 
-        PyObject *func = ForeignFunction_New(symname, obj, (PyObject *) ctxt->loader);
-        if (!func)
+        const struct uniqtype *type = __liballocs_get_alloc_type(data);
+        if (!type) return 0;
+        add_type_to_module(type, ctxt);
+
+        ForeignTypeObject *ftype = ForeignType_GetOrCreate(type);
+        if (!ftype)
         {
-            // Ignore functions that fail to be loaded
             PyErr_Clear();
             return 0;
         }
 
-        PyModule_AddObject(ctxt->module, symname, func);
-        add_type_to_module(ForeignFunction_GetType(func), ctxt);
+        PyObject *obj = ftype->ft_getfrom(data, ftype, (PyObject *) ctxt->loader);
+        Py_DECREF(ftype);
+        if (!obj)
+        {
+            PyErr_Clear();
+            return 0;
+        }
+
+        PyModule_AddObject(ctxt->module, symname, obj);
     }
 
     return 0;

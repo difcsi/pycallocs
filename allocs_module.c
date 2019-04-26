@@ -34,7 +34,7 @@ PyMODINIT_FUNC PyInit_allocs(void)
     if (PyType_Ready(&ForeignLibraryLoader_Type) < 0) return NULL;
     if (PyType_Ready(&ForeignProxy_Type) < 0) return NULL;
     if (PyType_Ready(&ForeignType_Type) < 0) return NULL;
-    if (PyType_Ready(&ForeignFunction_Type) < 0) return NULL;
+    if (PyType_Ready(&ForeignFunction_ProxyMetatype) < 0) return NULL;
     if (PyType_Ready(&ForeignComposite_ProxyMetatype) < 0) return NULL;
 
     PyObject *m = PyModule_Create(&allocsmodule);
@@ -46,8 +46,10 @@ PyMODINIT_FUNC PyInit_allocs(void)
     PyModule_AddObject(m, "ForeignProxy", (PyObject *) &ForeignProxy_Type);
     Py_INCREF(&ForeignType_Type);
     PyModule_AddObject(m, "ForeignType", (PyObject *) &ForeignType_Type);
-    Py_INCREF(&ForeignFunction_Type);
-    PyModule_AddObject(m, "ForeignFunction", (PyObject *) &ForeignFunction_Type);
+    Py_INCREF(&ForeignFunction_ProxyMetatype);
+    PyModule_AddObject(m, "ForeignFunctionProxyType", (PyObject *) &ForeignFunction_ProxyMetatype);
+    Py_INCREF(&ForeignComposite_ProxyMetatype);
+    PyModule_AddObject(m, "ForeignCompositeProxyMetatype", (PyObject *) &ForeignComposite_ProxyMetatype);
 
     return m;
 }

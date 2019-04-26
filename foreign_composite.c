@@ -6,7 +6,12 @@ typedef struct {
     PyGetSetDef memb[];
 } ForeignCompositeProxyTypeObject;
 
-// TODO: Check that subclassing a foreign composite handler works
+static PyObject *foreigncompositetype_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+{
+    PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign composite proxy types");
+    return NULL;
+}
+
 PyTypeObject ForeignComposite_ProxyMetatype = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "allocs.ForeignCompositeProxyType",
@@ -14,6 +19,7 @@ PyTypeObject ForeignComposite_ProxyMetatype = {
     .tp_base = &PyType_Type,
     .tp_basicsize = sizeof(ForeignCompositeProxyTypeObject),
     .tp_itemsize = sizeof(PyGetSetDef),
+    .tp_new = foreigncompositetype_new,
 };
 
 static PyObject *foreigncomposite_getfield(ForeignProxyObject *self, struct uniqtype_rel_info *field_info)

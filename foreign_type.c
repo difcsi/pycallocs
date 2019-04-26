@@ -83,12 +83,15 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
             return ForeignBaseType_New(type);
         case COMPOSITE:
             return ForeignComposite_NewType(type);
+        case SUBPROGRAM:
+            return ForeignFunction_NewType(type);
         case ADDRESS:
         case ARRAY:
-        case SUBPROGRAM:
         case ENUMERATION:
         case SUBRANGE:
         default:
+            PyErr_Format(PyExc_ImportError,
+                    "Cannot create foreign type for '%s'", UNIQTYPE_NAME(type));
             return NULL; // Not handled
     }
 }

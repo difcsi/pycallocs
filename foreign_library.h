@@ -37,9 +37,8 @@ extern PyTypeObject ForeignLibraryLoader_Type;
 
 ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type);
 
-extern PyTypeObject ForeignFunction_Type;
-PyObject *ForeignFunction_New(const char *symname, void *funptr, PyObject *dlloader);
-const struct uniqtype *ForeignFunction_GetType(PyObject *func);
+extern PyTypeObject ForeignFunction_ProxyMetatype;
+ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type);
 
 extern PyTypeObject ForeignComposite_ProxyMetatype;
 ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type);

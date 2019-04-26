@@ -4,14 +4,12 @@
 #include <dwarf.h>
 
 typedef struct {
-    PyObject_HEAD
-    const char *ff_symname;
-    void *ff_funptr;
+    PyTypeObject tp_base;
     const struct uniqtype *ff_type;
     ffi_cif *ff_cif;
-    // Ensure that the library is never unloaded while the function is callable
-    PyObject *ff_dlloader;
-} ForeignFunctionObject;
+    ForeignTypeObject **ff_argtypes;
+    ForeignTypeObject *ff_rettype;
+} ForeignFunctionProxyTypeObject;
 
 static void free_ffi_type_arr(ffi_type **arr);
 static void free_ffi_type(ffi_type *typ)
@@ -30,7 +28,7 @@ static void free_ffi_type_arr(ffi_type **arr)
 }
 
 // The caller must call free_ffi_type on the result to free the returned type
-static ffi_type *ffi_type_for_uniqtype(struct uniqtype *type)
+static ffi_type *ffi_type_for_uniqtype(const struct uniqtype *type)
 {
     switch (type->un.info.kind)
     {
@@ -138,9 +136,9 @@ static ffi_type *ffi_type_for_uniqtype(struct uniqtype *type)
     }
 }
 
-/* foreignfun_setup_cif returns a negative value and sets a Python exception
+/* foreignfuntype_setup returns a negative value and sets a Python exception
  * on failure */
-static int foreignfun_setup_cif(ForeignFunctionObject *self)
+static int foreignfuntype_setup(ForeignFunctionProxyTypeObject *self)
 {
     if (self->ff_cif) return 0;
     const struct uniqtype *type = self->ff_type;
@@ -150,67 +148,121 @@ static int foreignfun_setup_cif(ForeignFunctionObject *self)
         PyErr_SetString(PyExc_ImportError, "Foreign functions not having exactly one return value are not supported");
         return -1;
     }
-    ffi_type *ret_type = ffi_type_for_uniqtype(type->related[0].un.t.ptr);
-    if (!ret_type)
+    const struct uniqtype *ret_type = type->related[0].un.t.ptr;
+    self->ff_rettype = ForeignType_GetOrCreate(ret_type);
+    if (!self->ff_rettype) return -1;
+    ffi_type *ffi_ret_type = ffi_type_for_uniqtype(ret_type);
+    if (!ffi_ret_type)
     {
         PyErr_SetString(PyExc_ImportError, "Cannot get ABI encoding for return value");
-        free_ffi_type(ret_type);
-        return -1;
+        goto err_rettype;
     }
 
-    ffi_type **arg_types = NULL;
+    ffi_type **ffi_arg_types = NULL;
     unsigned narg = type->un.subprogram.narg;
     if (narg > 0)
     {
-        arg_types = PyMem_Malloc((1+narg) * sizeof(ffi_type *));
-        arg_types[narg] = NULL;
+        ffi_arg_types = PyMem_Malloc((1+narg) * sizeof(ffi_type *));
+        self->ff_argtypes = PyMem_Malloc((1+narg) * sizeof(ForeignTypeObject *));
+
+        ffi_arg_types[narg] = NULL;
+        self->ff_argtypes[narg] = NULL;
     }
     for (int i = 0 ; i < narg ; ++i)
     {
-        arg_types[i] = ffi_type_for_uniqtype(type->related[i+1].un.t.ptr);
-        if (!arg_types[i])
+        const struct uniqtype *arg_type = type->related[i+1].un.t.ptr;
+        ffi_arg_types[i] = ffi_type_for_uniqtype(arg_type);
+        self->ff_argtypes[i] = ForeignType_GetOrCreate(arg_type);
+        if (!ffi_arg_types[i] || !self->ff_argtypes[i])
         {
-            PyErr_Format(PyExc_ImportError, "Cannot get ABI encoding for argument %d", i);
-            free_ffi_type(ret_type);
-            free_ffi_type_arr(arg_types);
-            return -1;
+            if (!ffi_arg_types[i])
+            {
+                PyErr_Format(PyExc_ImportError, "Cannot get ABI encoding for argument %d", i);
+            }
+            ffi_arg_types[i+1] = NULL;
+            self->ff_argtypes[i+1] = NULL;
+            goto err_argtype;
         }
     }
 
     ffi_cif *cif = PyMem_Malloc(sizeof(ffi_cif));
-    if (ffi_prep_cif(cif, FFI_DEFAULT_ABI, narg, ret_type, arg_types) == FFI_OK)
+    if (ffi_prep_cif(cif, FFI_DEFAULT_ABI, narg, ffi_ret_type, ffi_arg_types) == FFI_OK)
     {
         self->ff_cif = cif;
         return 0;
     }
-    else
+
+    PyErr_Format(PyExc_ImportError, "Failure in call information initialization");
+    PyMem_Free(cif);
+err_argtype:
+    if (narg > 0)
     {
-        PyMem_Free(cif);
-        free_ffi_type(ret_type);
-        free_ffi_type_arr(arg_types);
-        PyErr_Format(PyExc_ImportError, "Failure in call information initialization for '%s'", self->ff_symname);
-        return -1;
+        for (unsigned i = 0; self->ff_argtypes[i]; ++i)
+        {
+            Py_DECREF(self->ff_argtypes[i]);
+        }
+        PyMem_Free(self->ff_argtypes);
+        free_ffi_type_arr(ffi_arg_types);
     }
+    free_ffi_type(ffi_ret_type);
+err_rettype:
+    Py_DECREF(self->ff_rettype);
+    return -1;
 }
 
-static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, PyObject *kwds)
+static PyObject *foreignfuntype_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    if (foreignfun_setup_cif(self) < 0) return NULL;
-    unsigned narg = self->ff_type->un.subprogram.narg;
+    PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign function proxy types");
+    return NULL;
+}
 
+static void foreignfuntype_dealloc(ForeignFunctionProxyTypeObject *self)
+{
+    if (self->ff_cif)
+    {
+        free_ffi_type(self->ff_cif->rtype);
+        free_ffi_type_arr(self->ff_cif->arg_types);
+        PyMem_Free(self->ff_cif);
+
+        for (unsigned i = 0; self->ff_argtypes[i]; ++i)
+        {
+            Py_DECREF(self->ff_argtypes[i]);
+        }
+        PyMem_Free(self->ff_argtypes);
+
+        Py_DECREF(self->ff_rettype);
+    }
+    Py_TYPE(self)->tp_free((PyObject *) self);
+}
+
+PyTypeObject ForeignFunction_ProxyMetatype = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "allocs.ForeignFunctionProxyType",
+    .tp_doc = "Metatype for foreign function proxies",
+    .tp_base = &PyType_Type,
+    .tp_basicsize = sizeof(ForeignFunctionProxyTypeObject),
+    .tp_new = foreignfuntype_new,
+    .tp_dealloc = (destructor) foreignfuntype_dealloc,
+};
+
+static PyObject *foreignfun_call(ForeignProxyObject *self, PyObject *args, PyObject *kwds)
+{
+    ForeignFunctionProxyTypeObject *type = (ForeignFunctionProxyTypeObject *) Py_TYPE(self);
+    if (foreignfuntype_setup(type) < 0) return NULL;
+
+    unsigned narg = type->ff_type->un.subprogram.narg;
     if (PySequence_Fast_GET_SIZE(args) != narg)
     {
         PyErr_Format(PyExc_TypeError,
-                     "'%s' takes exactly %d argument%s (%d given)",
-                     self->ff_symname, narg, narg == 1 ? "" : "s",
-                     PySequence_Fast_GET_SIZE(args));
+                     "This function takes exactly %d argument%s (%d given)",
+                     narg, narg == 1 ? "" : "s", PySequence_Fast_GET_SIZE(args));
         return NULL;
     }
 
     unsigned argsize = 0;
     for (int i = 0 ; i < narg ; ++i)
     {
-        const struct uniqtype *arg_type = self->ff_type->related[i+1].un.t.ptr;
+        const struct uniqtype *arg_type = type->ff_type->related[i+1].un.t.ptr;
         argsize += UNIQTYPE_SIZE_IN_BYTES(arg_type);
     }
 
@@ -224,39 +276,39 @@ static PyObject *foreignfun_call(ForeignFunctionObject *self, PyObject *args, Py
         // TODO: Use kwds arguments too
         PyObject *py_arg = PySequence_Fast_GET_ITEM(args, i);
 
-        const struct uniqtype *arg_type = self->ff_type->related[i+1].un.t.ptr;
-        ForeignTypeObject *arg_ftype = ForeignType_GetOrCreate(arg_type);
-        // ^ These lookups should be precomputed with cif initialization
-        if (!arg_ftype || arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
+        const struct uniqtype *arg_type = type->ff_type->related[i+1].un.t.ptr;
+        ForeignTypeObject *arg_ftype = type->ff_argtypes[i];
+        if (arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
         {
             return NULL;
         }
-        Py_DECREF(arg_ftype);
         ff_args[i] = cur_arg;
         cur_arg += UNIQTYPE_SIZE_IN_BYTES(arg_type);
     }
 
-    const struct uniqtype *ret_type = self->ff_type->related[0].un.t.ptr;
-    ForeignTypeObject *ret_ftype = ForeignType_GetOrCreate(ret_type);
-    if (!ret_ftype) return NULL;
+    const struct uniqtype *ret_type = type->ff_type->related[0].un.t.ptr;
+    ForeignTypeObject *ret_ftype = type->ff_rettype;
 
     unsigned retsize = UNIQTYPE_SIZE_IN_BYTES(ret_type);
     // Return values can be widened by libffi up to sizeof(ffi_arg)
     if (sizeof(ffi_arg) > retsize) retsize = sizeof(ffi_arg);
     char retval[retsize];
 
-    ffi_call(self->ff_cif, self->ff_funptr, retval, ff_args);
+    ffi_call(type->ff_cif, self->fpo_ptr, retval, ff_args);
 
     // FIXME: On big-endian architectures, we need to shift retval pointer if
     // it has been widened by libffi. For the moment assume we are little-endian
-    PyObject *retobj = ret_ftype->ft_getfrom(retval, ret_ftype, NULL);
-    Py_DECREF(ret_ftype);
-    return retobj;
+    return ret_ftype->ft_getfrom(retval, ret_ftype, NULL);
 }
 
-static PyObject *foreignfun_repr(ForeignFunctionObject *self)
+static PyObject *foreignfun_repr(ForeignProxyObject *self)
 {
-    const struct uniqtype *type = self->ff_type;
+    ForeignFunctionProxyTypeObject *proxytype = (ForeignFunctionProxyTypeObject *) Py_TYPE(self);
+    const struct uniqtype *type = proxytype->ff_type;
+
+    const char *symname = "<unknown>";
+    Dl_info dlinfo;
+    if(dladdr(self->fpo_ptr, &dlinfo)) symname = dlinfo.dli_sname;
 
     int nret = type->un.subprogram.nret;
     int narg = type->un.subprogram.narg;
@@ -280,8 +332,8 @@ static PyObject *foreignfun_repr(ForeignFunctionObject *self)
     Py_DECREF(arg_list);
     Py_DECREF(sep);
 
-    PyObject *funsig = PyUnicode_FromFormat("<foreign function '%U %s(%U)' at %p>", ret_str,
-        self->ff_symname, arg_str, self->ff_funptr);
+    PyObject *funsig = PyUnicode_FromFormat("<foreign function '%U %s(%U)' at %p>",
+            ret_str, symname, arg_str, self->fpo_ptr);
 
     Py_DECREF(ret_str);
     Py_DECREF(arg_str);
@@ -289,52 +341,33 @@ static PyObject *foreignfun_repr(ForeignFunctionObject *self)
     return funsig;
 }
 
-static void foreignfun_dealloc(ForeignFunctionObject *self)
+static PyObject *foreignfun_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    Py_DECREF(self->ff_dlloader);
-    if (self->ff_cif)
-    {
-        free_ffi_type(self->ff_cif->rtype);
-        free_ffi_type_arr(self->ff_cif->arg_types);
-        PyMem_Free(self->ff_cif);
-    }
-    Py_TYPE(self)->tp_free((PyObject *) self);
+    PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign function");
+    return NULL;
 }
 
-PyTypeObject ForeignFunction_Type = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "allocs.ForeignFunction",
-    .tp_doc = "Callable function from a foreign library",
-    .tp_basicsize = sizeof(ForeignFunctionObject),
-    .tp_itemsize = 0,
-    .tp_repr = (reprfunc) foreignfun_repr,
-    .tp_call = (ternaryfunc) foreignfun_call,
-    .tp_dealloc = (destructor) foreignfun_dealloc,
-};
-
-PyObject *ForeignFunction_New(const char *symname, void *funptr, PyObject *dlloader)
+ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type)
 {
-    const struct uniqtype *type = __liballocs_get_alloc_type(funptr);
-    if (!type || !UNIQTYPE_IS_SUBPROGRAM_TYPE(type))
+    ForeignFunctionProxyTypeObject *htype =
+        PyObject_GC_New(ForeignFunctionProxyTypeObject, &ForeignFunction_ProxyMetatype);
+
+    htype->tp_base = (PyTypeObject){
+        .ob_base = htype->tp_base.ob_base,
+        .tp_name = UNIQTYPE_NAME(type), // Maybe find a better name ?
+        .tp_base = &ForeignProxy_Type,
+        .tp_new = foreignfun_new,
+        .tp_call = (ternaryfunc) foreignfun_call,
+        .tp_repr = (reprfunc) foreignfun_repr,
+    };
+    htype->ff_type = type;
+    htype->ff_cif = NULL;
+
+    if (PyType_Ready((PyTypeObject *) htype) < 0)
     {
-        PyErr_Format(PyExc_ImportError, "Retrieving type information for foreign function '%s' failed", symname);
+        Py_DECREF(htype);
         return NULL;
     }
 
-    ForeignFunctionObject *obj;
-    obj = PyObject_New(ForeignFunctionObject, &ForeignFunction_Type);
-    obj->ff_symname = symname;
-    obj->ff_funptr = funptr;
-    obj->ff_type = type;
-    obj->ff_cif = NULL;
-    Py_INCREF(dlloader);
-    obj->ff_dlloader = dlloader;
-    return (PyObject *) obj;
-}
-
-// Warning : This function does not typecheck the given object
-const struct uniqtype *ForeignFunction_GetType(PyObject *func)
-{
-    ForeignFunctionObject *ffobj = (ForeignFunctionObject *) func;
-    return ffobj->ff_type;
+    return ForeignProxy_NewType(type, (PyTypeObject *) htype);
 }
