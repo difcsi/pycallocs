@@ -43,4 +43,7 @@ ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type);
 extern PyTypeObject ForeignComposite_ProxyMetatype;
 ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type);
 
+extern PyTypeObject ForeignAddress_ProxyMetatype;
+ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type);
+
 #endif

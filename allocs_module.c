@@ -36,6 +36,7 @@ PyMODINIT_FUNC PyInit_allocs(void)
     if (PyType_Ready(&ForeignType_Type) < 0) return NULL;
     if (PyType_Ready(&ForeignFunction_ProxyMetatype) < 0) return NULL;
     if (PyType_Ready(&ForeignComposite_ProxyMetatype) < 0) return NULL;
+    if (PyType_Ready(&ForeignAddress_ProxyMetatype) < 0) return NULL;
 
     PyObject *m = PyModule_Create(&allocsmodule);
     if (m == NULL) return NULL;
@@ -50,6 +51,8 @@ PyMODINIT_FUNC PyInit_allocs(void)
     PyModule_AddObject(m, "ForeignFunctionProxyType", (PyObject *) &ForeignFunction_ProxyMetatype);
     Py_INCREF(&ForeignComposite_ProxyMetatype);
     PyModule_AddObject(m, "ForeignCompositeProxyMetatype", (PyObject *) &ForeignComposite_ProxyMetatype);
+    Py_INCREF(&ForeignAddress_ProxyMetatype);
+    PyModule_AddObject(m, "ForeignAddressProxyMetatype", (PyObject *) &ForeignAddress_ProxyMetatype);
 
     return m;
 }

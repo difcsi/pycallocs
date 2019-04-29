@@ -86,6 +86,7 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
         case SUBPROGRAM:
             return ForeignFunction_NewType(type);
         case ADDRESS:
+            return ForeignAddress_NewType(type);
         case ARRAY:
         case ENUMERATION:
         case SUBRANGE:

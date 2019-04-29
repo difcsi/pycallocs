@@ -13,7 +13,7 @@ allocs = Extension('allocs',
                    sources = ['allocs_module.c', 'foreign_library_loader.c',
                        'foreign_proxy.c', 'foreign_type.c',
                        'foreign_basetype.c', 'foreign_function.c',
-                       'foreign_composite.c'],
+                       'foreign_composite.c', 'foreign_address.c'],
                    extra_compile_args = ["-O0"])
 
 setup (name = 'Liballocs FFI',
