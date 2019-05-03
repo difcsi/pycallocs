@@ -70,8 +70,7 @@ static PyObject *foreignaddr_getfrom(void *data, ForeignTypeObject *type, PyObje
     // NULL -> None
     if (!ptr) Py_RETURN_NONE;
 
-    PyTypeObject *handler_type = (PyTypeObject *) type->ft_constructor;
-    ForeignProxyObject *obj = PyObject_New(ForeignProxyObject, handler_type);
+    ForeignProxyObject *obj = PyObject_New(ForeignProxyObject, type->ft_proxy_type);
     if (obj)
     {
         obj->fpo_ptr = ptr;
@@ -90,29 +89,26 @@ static int foreignaddr_storeinto(PyObject *obj, void *dest, ForeignTypeObject *t
         *(void **) dest = NULL;
     }
 
-    ForeignAddressProxyTypeObject *handler_type = (ForeignAddressProxyTypeObject *) type->ft_constructor;
+    ForeignAddressProxyTypeObject *proxy_type = (ForeignAddressProxyTypeObject *) type->ft_proxy_type;
 
     // Check if obj is an address proxy object
-    if (PyObject_TypeCheck(obj, (PyTypeObject *) handler_type))
+    if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type))
     {
         *(void **) dest = ((ForeignProxyObject *) obj)->fpo_ptr;
         return 0;
     }
 
     // Check if obj is a proxy to the pointee type
-    PyObject *pointee_ctor = handler_type->pointee_type->ft_constructor;
-    if (PyType_Check(pointee_ctor) && PyType_IsSubtype((PyTypeObject *) pointee_ctor, &ForeignProxy_Type))
+    PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
+    if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy))
     {
-        if (PyObject_TypeCheck(obj, (PyTypeObject *) pointee_ctor))
-        {
-            *(void **) dest = ((ForeignProxyObject *) obj)->fpo_ptr;
-            return 0;
-        }
+        *(void **) dest = ((ForeignProxyObject *) obj)->fpo_ptr;
+        return 0;
     }
 
     // Else type error
     PyErr_Format(PyExc_TypeError, "expected reference to object of type %s, got %s",
-        UNIQTYPE_NAME(handler_type->pointee_type->ft_type), Py_TYPE(obj)->tp_name);
+        UNIQTYPE_NAME(proxy_type->pointee_type->ft_type), Py_TYPE(obj)->tp_name);
     return -1;
 }
 
@@ -154,7 +150,8 @@ ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
 
     ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
     ftype->ft_type = type;
-    ftype->ft_constructor = (PyObject *) htype;
+    ftype->ft_proxy_type = (PyTypeObject *) htype;
+    ftype->ft_constructor = NULL;
     ftype->ft_getfrom = foreignaddr_getfrom;
     ftype->ft_storeinto = foreignaddr_storeinto;
     return ftype;

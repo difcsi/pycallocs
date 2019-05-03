@@ -18,7 +18,9 @@ static PyObject *foreigntype_repr(ForeignTypeObject *self)
 
 static void foreigntype_dealloc(ForeignTypeObject *self)
 {
+    Py_XDECREF(self->ft_proxy_type);
     Py_XDECREF(self->ft_constructor);
+    Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
 static PyObject *foreigntype_ptr(ForeignTypeObject *self)
@@ -74,6 +76,7 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
         {
             ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
             ftype->ft_type = type;
+            ftype->ft_proxy_type = NULL;
             ftype->ft_constructor = NULL;
             ftype->ft_getfrom = void_getfrom;
             ftype->ft_storeinto = void_storeinto;

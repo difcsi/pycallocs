@@ -347,7 +347,7 @@ static PyObject *foreignfun_new(PyTypeObject *type, PyObject *args, PyObject *kw
     return NULL;
 }
 
-ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type)
+static PyTypeObject *foreignfun_newproxytype(const struct uniqtype *type)
 {
     ForeignFunctionProxyTypeObject *htype =
         PyObject_GC_New(ForeignFunctionProxyTypeObject, &ForeignFunction_ProxyMetatype);
@@ -369,5 +369,112 @@ ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type)
         return NULL;
     }
 
-    return ForeignProxy_NewType(type, (PyTypeObject *) htype);
+    return (PyTypeObject *) htype;
+}
+
+typedef struct {
+    ForeignProxyObject ff_base;
+    ffi_closure *fc_closure;
+    PyObject *fc_callable;
+} ForeignClosureObject;
+
+typedef void (*ffi_closure_func)(ffi_cif *, void *, void **, void*);
+
+static void foreignclosure_call(ffi_cif *cif, void *ret, void **args, ForeignClosureObject *closure)
+{
+    // FIXME: Will break if subclassing (but what's the point in doing this anyway...)
+    ForeignFunctionProxyTypeObject *fun_type =
+        (ForeignFunctionProxyTypeObject *) Py_TYPE(closure)->tp_base;
+
+    unsigned nargs = cif->nargs;
+    PyObject *pargs = PyTuple_New(nargs);
+    for (unsigned i = 0; i < nargs; ++i)
+    {
+        ForeignTypeObject *arg_type = fun_type->ff_argtypes[i];
+        PyTuple_SET_ITEM(pargs, i, arg_type->ft_getfrom(args[i], arg_type, NULL));
+    }
+
+    PyObject *ret_obj = PyObject_CallObject(closure->fc_callable, pargs);
+
+    ForeignTypeObject *ret_type = fun_type->ff_rettype;
+    ret_type->ft_storeinto(ret_obj, ret, ret_type);
+}
+
+static PyObject *foreignclosure_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    // FIXME: Will break if subclassing
+    ForeignFunctionProxyTypeObject *fun_proxy_type =
+        (ForeignFunctionProxyTypeObject *) type->tp_base;
+
+    if (foreignfuntype_setup(fun_proxy_type) < 0) return NULL;
+
+    static char *keywords[] = { "callable", NULL };
+    PyObject *callable;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O", keywords, &callable))
+    {
+        return NULL;
+    }
+    if (!PyCallable_Check(callable))
+    {
+        PyErr_SetString(PyExc_TypeError,
+                "Cannot create foreign closure over a non callable object");
+        return NULL;
+    }
+
+    ForeignClosureObject *obj = (ForeignClosureObject *) type->tp_alloc(type, 0);
+    if (obj)
+    {
+        obj->ff_base.fpo_allocator = (PyObject *) obj;
+        obj->fc_closure = ffi_closure_alloc(sizeof(ffi_closure), &obj->ff_base.fpo_ptr);
+        Py_INCREF(callable);
+        obj->fc_callable = callable;
+
+        if (ffi_prep_closure_loc(obj->fc_closure, fun_proxy_type->ff_cif,
+                (ffi_closure_func) foreignclosure_call, obj,
+                obj->ff_base.fpo_ptr) != FFI_OK)
+        {
+            PyErr_SetString(PyExc_ValueError, "Failed to create closure for callable object");
+            Py_DECREF(obj);
+            return NULL;
+        }
+    }
+    return (PyObject *) obj;
+}
+
+static void foreignclosure_dealloc(ForeignClosureObject *self)
+{
+    ffi_closure_free(self->fc_closure);
+    Py_DECREF(self->fc_callable);
+    Py_TYPE(self)->tp_free((PyObject *) self);
+}
+
+static PyTypeObject *foreignclosure_newtype(PyTypeObject *funproxytype)
+{
+    PyTypeObject *clostype = PyObject_GC_New(PyTypeObject, &PyType_Type);
+
+    *clostype = (PyTypeObject){
+        .ob_base = clostype->ob_base,
+        .tp_name = "<foreign closure type>",
+        .tp_basicsize = sizeof(ForeignClosureObject),
+        .tp_base = funproxytype,
+        .tp_new = foreignclosure_new,
+        .tp_dealloc = (destructor) foreignclosure_dealloc,
+        .tp_flags = Py_TPFLAGS_DEFAULT,
+    };
+
+    if (PyType_Ready(clostype) < 0)
+    {
+        Py_DECREF(clostype);
+        return NULL;
+    }
+
+    return clostype;
+}
+
+ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type)
+{
+    PyTypeObject *fun_type = foreignfun_newproxytype(type);
+    ForeignTypeObject *ftype = ForeignProxy_NewType(type, fun_type);
+    ftype->ft_constructor = (PyObject *) foreignclosure_newtype(fun_type);
+    return ftype;
 }

@@ -189,6 +189,9 @@ ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type)
         return NULL;
     }
 
-    return ForeignProxy_NewType(type, (PyTypeObject *) htype);
+    ForeignTypeObject *ftype = ForeignProxy_NewType(type, (PyTypeObject *) htype);
+    Py_INCREF(htype);
+    ftype->ft_constructor = (PyObject *) htype;
+    return ftype;
 }
 

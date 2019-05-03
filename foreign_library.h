@@ -17,6 +17,10 @@ typedef struct ForeignTypeObject {
     PyObject_HEAD
     const struct uniqtype* ft_type;
 
+    // Type of proxies to foreign objects of this type. Can be NULL.
+    // If set, this must be a subtype of ForeignProxy_Type.
+    PyTypeObject *ft_proxy_type;
+
     PyObject *ft_constructor; // Callable constructor (may be a class)
 
     // Data is copied into the created Python proxy except if allocator is not

@@ -31,8 +31,8 @@ PyTypeObject ForeignProxy_Type = {
 
 static PyObject *foreignproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
 {
-    PyTypeObject *handler_type = (PyTypeObject *) type->ft_constructor;
-    ForeignProxyObject *obj = PyObject_New(ForeignProxyObject, handler_type);
+    PyTypeObject *proxy_type = type->ft_proxy_type;
+    ForeignProxyObject *obj = PyObject_New(ForeignProxyObject, proxy_type);
     if (obj)
     {
         if (allocator)
@@ -43,8 +43,8 @@ static PyObject *foreignproxy_getfrom(void *data, ForeignTypeObject *type, PyObj
         }
         else
         {
-            obj->fpo_ptr = PyMem_Malloc(handler_type->tp_itemsize);
-            memcpy(obj->fpo_ptr, data, handler_type->tp_itemsize);
+            obj->fpo_ptr = PyMem_Malloc(proxy_type->tp_itemsize);
+            memcpy(obj->fpo_ptr, data, proxy_type->tp_itemsize);
             obj->fpo_allocator = (PyObject *) obj;
         }
     }
@@ -53,15 +53,15 @@ static PyObject *foreignproxy_getfrom(void *data, ForeignTypeObject *type, PyObj
 
 static int foreignproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
-    PyTypeObject *handler_type = (PyTypeObject *) type->ft_constructor;
-    if (!PyObject_TypeCheck(obj, handler_type))
+    PyTypeObject *proxy_type = type->ft_proxy_type;
+    if (!PyObject_TypeCheck(obj, proxy_type))
     {
         PyErr_Format(PyExc_TypeError, "expected value of type %s, got %s",
-        handler_type->tp_name, Py_TYPE(obj)->tp_name);
+            proxy_type->tp_name, Py_TYPE(obj)->tp_name);
         return -1;
     }
     ForeignProxyObject *proxy = (ForeignProxyObject *) obj;
-    memcpy(dest, proxy->fpo_ptr, handler_type->tp_itemsize);
+    memcpy(dest, proxy->fpo_ptr, proxy_type->tp_itemsize);
     return 0;
 }
 
@@ -70,7 +70,8 @@ ForeignTypeObject *ForeignProxy_NewType(const struct uniqtype *type, PyTypeObjec
 {
     ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
     ftype->ft_type = type;
-    ftype->ft_constructor = (PyObject *) proxytype;
+    ftype->ft_proxy_type = proxytype;
+    ftype->ft_constructor = NULL;
     ftype->ft_getfrom = foreignproxy_getfrom;
     ftype->ft_storeinto = foreignproxy_storeinto;
     return ftype;

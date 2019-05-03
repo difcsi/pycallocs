@@ -56,21 +56,29 @@ struct add_sym_ctxt
 
 static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
 {
+    // FIXME: For many types these names will feel very weird
+    char type_name[256];
+    strncpy(type_name, UNIQTYPE_NAME(type), sizeof(type_name));
+    type_name[255] = '\0'; // We want NULL-terminated string in all cases
+    for (unsigned i = 0; i < 256; ++i)
+    {
+        // Replace $ by _
+        if (type_name[i] == '$') type_name[i] = '_';
+    }
+
+    // TODO: Manage name clashes
+    if (PyObject_HasAttrString(ctxt->module, type_name)) return;
+
+    ForeignTypeObject *ptype = ForeignType_GetOrCreate(type);
+    if (!ptype) return;
+
+    PyModule_AddObject(ctxt->module, type_name, (PyObject *) ptype);
+
     switch (type->un.info.kind)
     {
         case VOID:
         case BASE:
         case COMPOSITE:
-        {
-            const char *type_name = UNIQTYPE_NAME(type);
-            // TODO: Manage name clashes
-            if (PyObject_HasAttrString(ctxt->module, type_name)) return;
-
-            ForeignTypeObject *ptype = ForeignType_GetOrCreate(type);
-            if (!ptype) return;
-
-            PyModule_AddObject(ctxt->module, type_name, (PyObject *) ptype);
-
             if (type->un.info.kind == COMPOSITE)
             {
                 unsigned nb_memb = type->un.composite.nmemb;
@@ -80,7 +88,6 @@ static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt*
                 }
             }
             return;
-        }
         case ENUMERATION: // TODO: handle enums properly
             return;
         case ARRAY:

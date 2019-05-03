@@ -199,6 +199,7 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
 {
     ForeignTypeObject *obj = PyObject_New(ForeignTypeObject, &ForeignType_Type);
     obj->ft_type = type;
+    obj->ft_proxy_type = NULL;
     obj->ft_constructor = NULL;
 
     unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
