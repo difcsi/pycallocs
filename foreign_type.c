@@ -100,11 +100,23 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
     }
 }
 
+static void ForeignType_Init(ForeignTypeObject *self, const struct uniqtype *type)
+{
+    switch (type->un.info.kind)
+    {
+        case COMPOSITE:
+            ForeignComposite_InitType(self, type);
+            break;
+        default:
+            break;
+    }
+}
+
 // Returns a new reference
 ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type)
 {
     // This function makes the assumption that uniqtype's have infinite lifetime
-    // This may not be the case in real world...
+    // Our ForeignTypeObject's have too (no GC and storage in a static table)
 
     static PyObject *typdict = NULL;
     if (!typdict) typdict = PyDict_New();
@@ -115,10 +127,26 @@ ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type)
     else
     {
         ptype = (PyObject *) ForeignType_New(type);
-        if (ptype) PyDict_SetItem(typdict, typkey, ptype);
+        if (ptype)
+        {
+            PyDict_SetItem(typdict, typkey, ptype);
+            ForeignType_Init((ForeignTypeObject *) ptype, type);
+        }
     }
-
     Py_DECREF(typkey);
+
     return (ForeignTypeObject *) ptype;
 }
 
+bool ForeignType_IsTriviallyCopiable(const ForeignTypeObject *type)
+{
+    switch (type->ft_type->un.info.kind)
+    {
+        case COMPOSITE:
+        case ARRAY:
+        case SUBPROGRAM:
+            return false;
+        default:
+            return true;
+    }
+}

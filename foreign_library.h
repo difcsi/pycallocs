@@ -3,6 +3,7 @@
 
 #include <Python.h>
 #include <liballocs.h>
+#include <stdbool.h>
 
 // All the functions declared here do not NULL check or typecheck their arguments
 
@@ -35,6 +36,7 @@ typedef struct ForeignTypeObject {
 extern PyTypeObject ForeignType_Type;
 
 ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type);
+bool ForeignType_IsTriviallyCopiable(const ForeignTypeObject *type);
 ForeignTypeObject *ForeignProxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype);
 
 extern PyTypeObject ForeignLibraryLoader_Type;
@@ -46,6 +48,7 @@ ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type);
 
 extern PyTypeObject ForeignComposite_ProxyMetatype;
 ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type);
+void ForeignComposite_InitType(ForeignTypeObject *self, const struct uniqtype *type);
 
 extern PyTypeObject ForeignAddress_ProxyMetatype;
 ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type);

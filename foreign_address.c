@@ -134,12 +134,16 @@ ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
     {
         // Direct access to fields without [0] indirection
         htype->tp_base.tp_getset = ((PyTypeObject *)pointee_ftype->ft_constructor)->tp_getset;
-        // Disable silent copy into the array
-        htype->tp_base.tp_as_sequence = &foreignaddr_sequencemethods_readonly;
+    }
+
+    if (ForeignType_IsTriviallyCopiable(pointee_ftype))
+    {
+        htype->tp_base.tp_as_sequence = &foreignaddr_sequencemethods;
     }
     else
     {
-        htype->tp_base.tp_as_sequence = &foreignaddr_sequencemethods;
+        // Disable silent copy into the array
+        htype->tp_base.tp_as_sequence = &foreignaddr_sequencemethods_readonly;
     }
 
     if (PyType_Ready((PyTypeObject *) htype) < 0)
