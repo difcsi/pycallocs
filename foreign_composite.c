@@ -175,7 +175,7 @@ ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type)
 {
     int nb_fields = type->un.composite.nmemb;
     const char **field_names = __liballocs_uniqtype_subobject_names(type);
-    if (!field_names) return NULL;
+    if (!field_names) nb_fields = 0; // Consider it as an incomplete struct
 
     ForeignCompositeProxyTypeObject *htype =
         PyObject_GC_NewVar(ForeignCompositeProxyTypeObject, &ForeignComposite_ProxyMetatype, 0);
@@ -225,8 +225,7 @@ void ForeignComposite_InitType(ForeignTypeObject *self, const struct uniqtype *t
 {
     PyTypeObject *proxytype = self->ft_proxy_type;
 
-    int nb_fields = type->un.composite.nmemb;
-    for (int i_field = 0 ; i_field < nb_fields ; ++i_field)
+    for (int i_field = 0 ; proxytype->tp_getset[i_field].name ; ++i_field)
     {
         const struct uniqtype_rel_info *field_rel_info = &type->related[i_field];
 
