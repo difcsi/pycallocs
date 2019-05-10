@@ -25,7 +25,8 @@ static void foreigntype_dealloc(ForeignTypeObject *self)
 
 static PyObject *foreigntype_ptr(ForeignTypeObject *self)
 {
-    Py_RETURN_NOTIMPLEMENTED;
+    const struct uniqtype *ptrtype = __liballocs_get_or_create_address_type(self->ft_type);
+    return (PyObject *) ForeignType_GetOrCreate(ptrtype);
 }
 
 static PyObject *foreigntype_array(ForeignTypeObject *self, PyObject *arg)
@@ -33,9 +34,13 @@ static PyObject *foreigntype_array(ForeignTypeObject *self, PyObject *arg)
     Py_RETURN_NOTIMPLEMENTED;
 }
 
+static PyGetSetDef foreigntype_getters[] = {
+    {"ptr", (getter) foreigntype_ptr, NULL,
+        "Get the type of pointers to the current type.", NULL},
+    {NULL}
+};
+
 static PyMethodDef foreigntype_methods[] = {
-    {"ptr", (PyCFunction) foreigntype_ptr, METH_NOARGS,
-        "Get the type of pointers to the current type."},
     {"array", (PyCFunction) foreigntype_array, METH_O,
         "Get the type of an array of n elements of the current type, "
         "where n is the single parameter."},
@@ -50,6 +55,7 @@ PyTypeObject ForeignType_Type = {
     .tp_call = (ternaryfunc) foreigntype_call,
     .tp_repr = (reprfunc) foreigntype_repr,
     .tp_dealloc = (destructor) foreigntype_dealloc,
+    .tp_getset = foreigntype_getters,
     .tp_methods = foreigntype_methods,
 };
 

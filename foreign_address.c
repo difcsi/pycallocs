@@ -117,6 +117,8 @@ ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
     const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
     ForeignTypeObject *pointee_ftype = ForeignType_GetOrCreate(pointee_type);
 
+    if (!pointee_ftype) return NULL;
+
     ForeignAddressProxyTypeObject *htype =
         PyObject_GC_NewVar(ForeignAddressProxyTypeObject, &ForeignAddress_ProxyMetatype, 0);
     htype->pointee_type = pointee_ftype;
@@ -133,7 +135,7 @@ ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
     if (pointee_type->un.base.kind == COMPOSITE)
     {
         // Direct access to fields without [0] indirection
-        htype->tp_base.tp_getset = ((PyTypeObject *)pointee_ftype->ft_constructor)->tp_getset;
+        htype->tp_base.tp_getset = pointee_ftype->ft_proxy_type->tp_getset;
     }
 
     if (ForeignType_IsTriviallyCopiable(pointee_ftype))
