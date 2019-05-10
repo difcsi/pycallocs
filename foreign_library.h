@@ -9,17 +9,17 @@
 
 typedef struct {
     PyObject_HEAD
-    void *fpo_ptr;
-    PyObject *fpo_allocator;
-} ForeignProxyObject;
-extern PyTypeObject ForeignProxy_Type;
+    void *p_ptr;
+    PyObject *p_allocator;
+} ProxyObject;
+extern PyTypeObject Proxy_Type;
 
 typedef struct ForeignTypeObject {
     PyObject_HEAD
     const struct uniqtype* ft_type;
 
     // Type of proxies to foreign objects of this type. Can be NULL.
-    // If set, this must be a subtype of ForeignProxy_Type.
+    // If set, this must be a subtype of Proxy_Type.
     PyTypeObject *ft_proxy_type;
 
     PyObject *ft_constructor; // Callable constructor (may be a class)
@@ -37,20 +37,20 @@ extern PyTypeObject ForeignType_Type;
 
 ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type);
 bool ForeignType_IsTriviallyCopiable(const ForeignTypeObject *type);
-ForeignTypeObject *ForeignProxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype);
+ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype);
 
-extern PyTypeObject ForeignLibraryLoader_Type;
+extern PyTypeObject LibraryLoader_Type;
 
 ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type);
 
-extern PyTypeObject ForeignFunction_ProxyMetatype;
-ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type);
+extern PyTypeObject FunctionProxy_Metatype;
+ForeignTypeObject *FunctionProxy_NewType(const struct uniqtype *type);
 
-extern PyTypeObject ForeignComposite_ProxyMetatype;
-ForeignTypeObject *ForeignComposite_NewType(const struct uniqtype *type);
-void ForeignComposite_InitType(ForeignTypeObject *self, const struct uniqtype *type);
+extern PyTypeObject CompositeProxy_Metatype;
+ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type);
+void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type);
 
-extern PyTypeObject ForeignAddress_ProxyMetatype;
-ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type);
+extern PyTypeObject AddressProxy_Metatype;
+ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type);
 
 #endif

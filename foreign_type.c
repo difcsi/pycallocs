@@ -91,11 +91,11 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
         case BASE:
             return ForeignBaseType_New(type);
         case COMPOSITE:
-            return ForeignComposite_NewType(type);
+            return CompositeProxy_NewType(type);
         case SUBPROGRAM:
-            return ForeignFunction_NewType(type);
+            return FunctionProxy_NewType(type);
         case ADDRESS:
-            return ForeignAddress_NewType(type);
+            return AddressProxy_NewType(type);
         case ARRAY:
         case ENUMERATION:
         case SUBRANGE:
@@ -111,7 +111,7 @@ static void ForeignType_Init(ForeignTypeObject *self, const struct uniqtype *typ
     switch (type->un.info.kind)
     {
         case COMPOSITE:
-            ForeignComposite_InitType(self, type);
+            CompositeProxy_InitType(self, type);
             break;
         default:
             break;

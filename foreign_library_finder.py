@@ -25,7 +25,7 @@ class ForeignLibraryFinder(importlib.abc.MetaPathFinder):
         for base_path in search_paths:
             try:
                 filename = base_path + fullname + lib_extension
-                loader = allocs.ForeignLibraryLoader(filename)
+                loader = allocs.LibraryLoader(filename)
                 return importlib.machinery.ModuleSpec(fullname, loader, origin=filename)
             except ImportError:
                 continue

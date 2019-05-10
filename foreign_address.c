@@ -3,59 +3,59 @@
 typedef struct {
     PyTypeObject tp_base;
     ForeignTypeObject *pointee_type;
-} ForeignAddressProxyTypeObject;
+} AddressProxyTypeObject;
 
-static PyObject *foreignaddrtype_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static PyObject *addrproxytype_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign address proxy types");
     return NULL;
 }
 
-PyTypeObject ForeignAddress_ProxyMetatype = {
+PyTypeObject AddressProxy_Metatype = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "allocs.ForeignAddressProxyType",
-    .tp_doc = "Metatype for foreign address proxies",
+    .tp_name = "allocs.AddressProxyType",
+    .tp_doc = "Type for foreign address proxies",
     .tp_base = &PyType_Type,
-    .tp_basicsize = sizeof(ForeignAddressProxyTypeObject),
-    .tp_new = foreignaddrtype_new,
+    .tp_basicsize = sizeof(AddressProxyTypeObject),
+    .tp_new = addrproxytype_new,
 };
 
-static PyObject *foreignaddr_item(ForeignProxyObject *self, Py_ssize_t index)
+static PyObject *addrproxy_item(ProxyObject *self, Py_ssize_t index)
 {
     // TODO: Check array length
-    void *item = self->fpo_ptr + index * Py_TYPE(self)->tp_itemsize;
-    ForeignTypeObject *itemtype = ((ForeignAddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
-    return itemtype->ft_getfrom(item, itemtype, self->fpo_allocator);
+    void *item = self->p_ptr + index * Py_TYPE(self)->tp_itemsize;
+    ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
+    return itemtype->ft_getfrom(item, itemtype, self->p_allocator);
 }
 
-static int foreignaddr_ass_item(ForeignProxyObject *self, Py_ssize_t index, PyObject *value)
+static int addrproxy_ass_item(ProxyObject *self, Py_ssize_t index, PyObject *value)
 {
     // TODO: Check array length
-    void *item = self->fpo_ptr + index * Py_TYPE(self)->tp_itemsize;
-    ForeignTypeObject *itemtype = ((ForeignAddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
+    void *item = self->p_ptr + index * Py_TYPE(self)->tp_itemsize;
+    ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
     return itemtype->ft_storeinto(value, item, itemtype);
 }
 
-PySequenceMethods foreignaddr_sequencemethods = {
-    .sq_item = (ssizeargfunc) foreignaddr_item,
-    .sq_ass_item = (ssizeobjargproc) foreignaddr_ass_item,
+PySequenceMethods addrproxy_sequencemethods = {
+    .sq_item = (ssizeargfunc) addrproxy_item,
+    .sq_ass_item = (ssizeobjargproc) addrproxy_ass_item,
 };
 
-PySequenceMethods foreignaddr_sequencemethods_readonly = {
-    .sq_item = (ssizeargfunc) foreignaddr_item,
+PySequenceMethods addrproxy_sequencemethods_readonly = {
+    .sq_item = (ssizeargfunc) addrproxy_item,
 };
 
-static PyObject *foreignaddr_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static PyObject *addrproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     // TODO: Find meaningful constructors for pointers
     PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign addresses");
     return NULL;
 }
 
-static PyObject *foreignaddr_repr(ForeignProxyObject *self)
+static PyObject *addrproxy_repr(ProxyObject *self)
 {
     // TODO: Show all the elements in case of an array
-    PyObject *item_obj = foreignaddr_item(self, 0);
+    PyObject *item_obj = addrproxy_item(self, 0);
     PyObject *item_repr = PyObject_Repr(item_obj);
     Py_DECREF(item_obj);
     PyObject *repr = PyUnicode_FromFormat("<[%U]>", item_repr);
@@ -63,25 +63,25 @@ static PyObject *foreignaddr_repr(ForeignProxyObject *self)
     return repr;
 }
 
-static PyObject *foreignaddr_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
 {
     void *ptr = *(void **) data; // Data is an address to a pointer
 
     // NULL -> None
     if (!ptr) Py_RETURN_NONE;
 
-    ForeignProxyObject *obj = PyObject_New(ForeignProxyObject, type->ft_proxy_type);
+    ProxyObject *obj = PyObject_New(ProxyObject, type->ft_proxy_type);
     if (obj)
     {
-        obj->fpo_ptr = ptr;
+        obj->p_ptr = ptr;
         // TODO: find a safe allocator
         Py_INCREF(Py_None);
-        obj->fpo_allocator = Py_None;
+        obj->p_allocator = Py_None;
     }
     return (PyObject *) obj;
 }
 
-static int foreignaddr_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
+static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
     // None -> NULL
     if (obj == Py_None)
@@ -89,12 +89,12 @@ static int foreignaddr_storeinto(PyObject *obj, void *dest, ForeignTypeObject *t
         *(void **) dest = NULL;
     }
 
-    ForeignAddressProxyTypeObject *proxy_type = (ForeignAddressProxyTypeObject *) type->ft_proxy_type;
+    AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
 
     // Check if obj is an address proxy object
     if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type))
     {
-        *(void **) dest = ((ForeignProxyObject *) obj)->fpo_ptr;
+        *(void **) dest = ((ProxyObject *) obj)->p_ptr;
         return 0;
     }
 
@@ -102,7 +102,7 @@ static int foreignaddr_storeinto(PyObject *obj, void *dest, ForeignTypeObject *t
     PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
     if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy))
     {
-        *(void **) dest = ((ForeignProxyObject *) obj)->fpo_ptr;
+        *(void **) dest = ((ProxyObject *) obj)->p_ptr;
         return 0;
     }
 
@@ -112,24 +112,24 @@ static int foreignaddr_storeinto(PyObject *obj, void *dest, ForeignTypeObject *t
     return -1;
 }
 
-ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
+ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
 {
     const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
     ForeignTypeObject *pointee_ftype = ForeignType_GetOrCreate(pointee_type);
 
     if (!pointee_ftype) return NULL;
 
-    ForeignAddressProxyTypeObject *htype =
-        PyObject_GC_NewVar(ForeignAddressProxyTypeObject, &ForeignAddress_ProxyMetatype, 0);
+    AddressProxyTypeObject *htype =
+        PyObject_GC_NewVar(AddressProxyTypeObject, &AddressProxy_Metatype, 0);
     htype->pointee_type = pointee_ftype;
 
     htype->tp_base = (PyTypeObject){
         .ob_base = htype->tp_base.ob_base, // <- Keep the object base
         .tp_name = UNIQTYPE_NAME(type),
         .tp_itemsize = UNIQTYPE_SIZE_IN_BYTES(pointee_type),
-        .tp_base = &ForeignProxy_Type,
-        .tp_new = foreignaddr_new,
-        .tp_repr = (reprfunc) foreignaddr_repr,
+        .tp_base = &Proxy_Type,
+        .tp_new = addrproxy_new,
+        .tp_repr = (reprfunc) addrproxy_repr,
     };
 
     if (pointee_type->un.base.kind == COMPOSITE)
@@ -140,12 +140,12 @@ ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
 
     if (ForeignType_IsTriviallyCopiable(pointee_ftype))
     {
-        htype->tp_base.tp_as_sequence = &foreignaddr_sequencemethods;
+        htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods;
     }
     else
     {
         // Disable silent copy into the array
-        htype->tp_base.tp_as_sequence = &foreignaddr_sequencemethods_readonly;
+        htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods_readonly;
     }
 
     if (PyType_Ready((PyTypeObject *) htype) < 0)
@@ -158,7 +158,7 @@ ForeignTypeObject *ForeignAddress_NewType(const struct uniqtype *type)
     ftype->ft_type = type;
     ftype->ft_proxy_type = (PyTypeObject *) htype;
     ftype->ft_constructor = NULL;
-    ftype->ft_getfrom = foreignaddr_getfrom;
-    ftype->ft_storeinto = foreignaddr_storeinto;
+    ftype->ft_getfrom = addrproxy_getfrom;
+    ftype->ft_storeinto = addrproxy_storeinto;
     return ftype;
 }

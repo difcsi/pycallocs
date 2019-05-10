@@ -6,9 +6,9 @@
 typedef struct {
     PyObject_HEAD
     struct link_map *dl_handle;
-} ForeignLibraryLoaderObject;
+} LibraryLoaderObject;
 
-static void foreignlibloader_dealloc(ForeignLibraryLoaderObject *self)
+static void libloader_dealloc(LibraryLoaderObject *self)
 {
     if (self->dl_handle) dlclose(self->dl_handle);
     Py_TYPE(self)->tp_free((PyObject *) self);
@@ -51,7 +51,7 @@ static int dl_iterate_syms(struct link_map *handle,
 struct add_sym_ctxt
 {
     PyObject *module;
-    ForeignLibraryLoaderObject *loader;
+    LibraryLoaderObject *loader;
 };
 
 static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
@@ -154,12 +154,12 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
     return 0;
 }
 
-static PyObject *foreignlibloader_create(PyObject *self, PyObject *spec)
+static PyObject *libloader_create(PyObject *self, PyObject *spec)
 {
     Py_RETURN_NONE;
 }
 
-static PyObject *foreignlibloader_exec(ForeignLibraryLoaderObject *self, PyObject *module)
+static PyObject *libloader_exec(LibraryLoaderObject *self, PyObject *module)
 {
     struct add_sym_ctxt ctxt;
     ctxt.module = module;
@@ -169,17 +169,17 @@ static PyObject *foreignlibloader_exec(ForeignLibraryLoaderObject *self, PyObjec
     Py_RETURN_NONE;
 }
 
-static PyMethodDef foreignlibloader_methods[] = {
-    {"create_module", (PyCFunction) foreignlibloader_create, METH_O, NULL},
-    {"exec_module", (PyCFunction) foreignlibloader_exec, METH_O, NULL},
+static PyMethodDef libloader_methods[] = {
+    {"create_module", (PyCFunction) libloader_create, METH_O, NULL},
+    {"exec_module", (PyCFunction) libloader_exec, METH_O, NULL},
     {NULL}
 };
 
-static int foreignlibloader_init(ForeignLibraryLoaderObject* self, PyObject *args, PyObject *kwds)
+static int libloader_init(LibraryLoaderObject* self, PyObject *args, PyObject *kwds)
 {
     static char *kw_names[] = {"filename", NULL};
     const char *dlname;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "s:ForeignLibraryLoader",
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "s:LibraryLoader",
                 kw_names, &dlname))
     {
         return -1;
@@ -195,16 +195,16 @@ static int foreignlibloader_init(ForeignLibraryLoaderObject* self, PyObject *arg
     return 0;
 }
 
-PyTypeObject ForeignLibraryLoader_Type = {
+PyTypeObject LibraryLoader_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "allocs.ForeignLibraryLoader",
+    .tp_name = "allocs.LibraryLoader",
     .tp_doc = "Loader to import foreign library with liballocs",
-    .tp_basicsize = sizeof(ForeignLibraryLoaderObject),
+    .tp_basicsize = sizeof(LibraryLoaderObject),
     .tp_itemsize = 0,
     .tp_new = PyType_GenericNew,
-    .tp_init = (initproc) foreignlibloader_init,
+    .tp_init = (initproc) libloader_init,
     .tp_flags = Py_TPFLAGS_DEFAULT,
-    .tp_methods = foreignlibloader_methods,
-    .tp_dealloc = (destructor) foreignlibloader_dealloc,
+    .tp_methods = libloader_methods,
+    .tp_dealloc = (destructor) libloader_dealloc,
 };
 

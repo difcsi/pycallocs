@@ -9,7 +9,7 @@ typedef struct {
     ffi_cif *ff_cif;
     ForeignTypeObject **ff_argtypes;
     ForeignTypeObject *ff_rettype;
-} ForeignFunctionProxyTypeObject;
+} FunctionProxyTypeObject;
 
 static void free_ffi_type_arr(ffi_type **arr);
 static void free_ffi_type(ffi_type *typ)
@@ -136,9 +136,9 @@ static ffi_type *ffi_type_for_uniqtype(const struct uniqtype *type)
     }
 }
 
-/* foreignfuntype_setup returns a negative value and sets a Python exception
+/* funproxytype_setup returns a negative value and sets a Python exception
  * on failure */
-static int foreignfuntype_setup(ForeignFunctionProxyTypeObject *self)
+static int funproxytype_setup(FunctionProxyTypeObject *self)
 {
     if (self->ff_cif) return 0;
     const struct uniqtype *type = self->ff_type;
@@ -210,13 +210,13 @@ err_rettype:
     return -1;
 }
 
-static PyObject *foreignfuntype_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static PyObject *funproxytype_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign function proxy types");
     return NULL;
 }
 
-static void foreignfuntype_dealloc(ForeignFunctionProxyTypeObject *self)
+static void funproxytype_dealloc(FunctionProxyTypeObject *self)
 {
     if (self->ff_cif)
     {
@@ -235,20 +235,20 @@ static void foreignfuntype_dealloc(ForeignFunctionProxyTypeObject *self)
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
-PyTypeObject ForeignFunction_ProxyMetatype = {
+PyTypeObject FunctionProxy_Metatype = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "allocs.ForeignFunctionProxyType",
+    .tp_name = "allocs.FunctionProxyType",
     .tp_doc = "Metatype for foreign function proxies",
     .tp_base = &PyType_Type,
-    .tp_basicsize = sizeof(ForeignFunctionProxyTypeObject),
-    .tp_new = foreignfuntype_new,
-    .tp_dealloc = (destructor) foreignfuntype_dealloc,
+    .tp_basicsize = sizeof(FunctionProxyTypeObject),
+    .tp_new = funproxytype_new,
+    .tp_dealloc = (destructor) funproxytype_dealloc,
 };
 
-static PyObject *foreignfun_call(ForeignProxyObject *self, PyObject *args, PyObject *kwds)
+static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds)
 {
-    ForeignFunctionProxyTypeObject *type = (ForeignFunctionProxyTypeObject *) Py_TYPE(self);
-    if (foreignfuntype_setup(type) < 0) return NULL;
+    FunctionProxyTypeObject *type = (FunctionProxyTypeObject *) Py_TYPE(self);
+    if (funproxytype_setup(type) < 0) return NULL;
 
     unsigned narg = type->ff_type->un.subprogram.narg;
     if (PySequence_Fast_GET_SIZE(args) != narg)
@@ -294,21 +294,21 @@ static PyObject *foreignfun_call(ForeignProxyObject *self, PyObject *args, PyObj
     if (sizeof(ffi_arg) > retsize) retsize = sizeof(ffi_arg);
     char retval[retsize];
 
-    ffi_call(type->ff_cif, self->fpo_ptr, retval, ff_args);
+    ffi_call(type->ff_cif, self->p_ptr, retval, ff_args);
 
     // FIXME: On big-endian architectures, we need to shift retval pointer if
     // it has been widened by libffi. For the moment assume we are little-endian
     return ret_ftype->ft_getfrom(retval, ret_ftype, NULL);
 }
 
-static PyObject *foreignfun_repr(ForeignProxyObject *self)
+static PyObject *funproxy_repr(ProxyObject *self)
 {
-    ForeignFunctionProxyTypeObject *proxytype = (ForeignFunctionProxyTypeObject *) Py_TYPE(self);
+    FunctionProxyTypeObject *proxytype = (FunctionProxyTypeObject *) Py_TYPE(self);
     const struct uniqtype *type = proxytype->ff_type;
 
     const char *symname = "<unknown>";
     Dl_info dlinfo;
-    if(dladdr(self->fpo_ptr, &dlinfo)) symname = dlinfo.dli_sname;
+    if(dladdr(self->p_ptr, &dlinfo)) symname = dlinfo.dli_sname;
 
     int nret = type->un.subprogram.nret;
     int narg = type->un.subprogram.narg;
@@ -333,7 +333,7 @@ static PyObject *foreignfun_repr(ForeignProxyObject *self)
     Py_DECREF(sep);
 
     PyObject *funsig = PyUnicode_FromFormat("<foreign function '%U %s(%U)' at %p>",
-            ret_str, symname, arg_str, self->fpo_ptr);
+            ret_str, symname, arg_str, self->p_ptr);
 
     Py_DECREF(ret_str);
     Py_DECREF(arg_str);
@@ -341,24 +341,24 @@ static PyObject *foreignfun_repr(ForeignProxyObject *self)
     return funsig;
 }
 
-static PyObject *foreignfun_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static PyObject *funproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign function");
     return NULL;
 }
 
-static PyTypeObject *foreignfun_newproxytype(const struct uniqtype *type)
+static PyTypeObject *funproxy_newproxytype(const struct uniqtype *type)
 {
-    ForeignFunctionProxyTypeObject *htype =
-        PyObject_GC_New(ForeignFunctionProxyTypeObject, &ForeignFunction_ProxyMetatype);
+    FunctionProxyTypeObject *htype =
+        PyObject_GC_New(FunctionProxyTypeObject, &FunctionProxy_Metatype);
 
     htype->tp_base = (PyTypeObject){
         .ob_base = htype->tp_base.ob_base,
         .tp_name = UNIQTYPE_NAME(type), // Maybe find a better name ?
-        .tp_base = &ForeignProxy_Type,
-        .tp_new = foreignfun_new,
-        .tp_call = (ternaryfunc) foreignfun_call,
-        .tp_repr = (reprfunc) foreignfun_repr,
+        .tp_base = &Proxy_Type,
+        .tp_new = funproxy_new,
+        .tp_call = (ternaryfunc) funproxy_call,
+        .tp_repr = (reprfunc) funproxy_repr,
     };
     htype->ff_type = type;
     htype->ff_cif = NULL;
@@ -373,18 +373,18 @@ static PyTypeObject *foreignfun_newproxytype(const struct uniqtype *type)
 }
 
 typedef struct {
-    ForeignProxyObject ff_base;
+    ProxyObject ff_base;
     ffi_closure *fc_closure;
     PyObject *fc_callable;
-} ForeignClosureObject;
+} ClosureProxyObject;
 
 typedef void (*ffi_closure_func)(ffi_cif *, void *, void **, void*);
 
-static void foreignclosure_call(ffi_cif *cif, void *ret, void **args, ForeignClosureObject *closure)
+static void closureproxy_call(ffi_cif *cif, void *ret, void **args, ClosureProxyObject *closure)
 {
     // FIXME: Will break if subclassing (but what's the point in doing this anyway...)
-    ForeignFunctionProxyTypeObject *fun_type =
-        (ForeignFunctionProxyTypeObject *) Py_TYPE(closure)->tp_base;
+    FunctionProxyTypeObject *fun_type =
+        (FunctionProxyTypeObject *) Py_TYPE(closure)->tp_base;
 
     unsigned nargs = cif->nargs;
     PyObject *pargs = PyTuple_New(nargs);
@@ -400,13 +400,13 @@ static void foreignclosure_call(ffi_cif *cif, void *ret, void **args, ForeignClo
     ret_type->ft_storeinto(ret_obj, ret, ret_type);
 }
 
-static PyObject *foreignclosure_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+static PyObject *closureproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
     // FIXME: Will break if subclassing
-    ForeignFunctionProxyTypeObject *fun_proxy_type =
-        (ForeignFunctionProxyTypeObject *) type->tp_base;
+    FunctionProxyTypeObject *fun_proxy_type =
+        (FunctionProxyTypeObject *) type->tp_base;
 
-    if (foreignfuntype_setup(fun_proxy_type) < 0) return NULL;
+    if (funproxytype_setup(fun_proxy_type) < 0) return NULL;
 
     static char *keywords[] = { "callable", NULL };
     PyObject *callable;
@@ -421,17 +421,17 @@ static PyObject *foreignclosure_new(PyTypeObject *type, PyObject *args, PyObject
         return NULL;
     }
 
-    ForeignClosureObject *obj = (ForeignClosureObject *) type->tp_alloc(type, 0);
+    ClosureProxyObject *obj = (ClosureProxyObject *) type->tp_alloc(type, 0);
     if (obj)
     {
-        obj->ff_base.fpo_allocator = (PyObject *) obj;
-        obj->fc_closure = ffi_closure_alloc(sizeof(ffi_closure), &obj->ff_base.fpo_ptr);
+        obj->ff_base.p_allocator = (PyObject *) obj;
+        obj->fc_closure = ffi_closure_alloc(sizeof(ffi_closure), &obj->ff_base.p_ptr);
         Py_INCREF(callable);
         obj->fc_callable = callable;
 
         if (ffi_prep_closure_loc(obj->fc_closure, fun_proxy_type->ff_cif,
-                (ffi_closure_func) foreignclosure_call, obj,
-                obj->ff_base.fpo_ptr) != FFI_OK)
+                (ffi_closure_func) closureproxy_call, obj,
+                obj->ff_base.p_ptr) != FFI_OK)
         {
             PyErr_SetString(PyExc_ValueError, "Failed to create closure for callable object");
             Py_DECREF(obj);
@@ -441,24 +441,24 @@ static PyObject *foreignclosure_new(PyTypeObject *type, PyObject *args, PyObject
     return (PyObject *) obj;
 }
 
-static void foreignclosure_dealloc(ForeignClosureObject *self)
+static void closureproxy_dealloc(ClosureProxyObject *self)
 {
     ffi_closure_free(self->fc_closure);
     Py_DECREF(self->fc_callable);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
-static PyTypeObject *foreignclosure_newtype(PyTypeObject *funproxytype)
+static PyTypeObject *closureproxy_newtype(PyTypeObject *funproxytype)
 {
     PyTypeObject *clostype = PyObject_GC_New(PyTypeObject, &PyType_Type);
 
     *clostype = (PyTypeObject){
         .ob_base = clostype->ob_base,
         .tp_name = "<foreign closure type>",
-        .tp_basicsize = sizeof(ForeignClosureObject),
+        .tp_basicsize = sizeof(ClosureProxyObject),
         .tp_base = funproxytype,
-        .tp_new = foreignclosure_new,
-        .tp_dealloc = (destructor) foreignclosure_dealloc,
+        .tp_new = closureproxy_new,
+        .tp_dealloc = (destructor) closureproxy_dealloc,
         .tp_flags = Py_TPFLAGS_DEFAULT,
     };
 
@@ -471,10 +471,10 @@ static PyTypeObject *foreignclosure_newtype(PyTypeObject *funproxytype)
     return clostype;
 }
 
-ForeignTypeObject *ForeignFunction_NewType(const struct uniqtype *type)
+ForeignTypeObject *FunctionProxy_NewType(const struct uniqtype *type)
 {
-    PyTypeObject *fun_type = foreignfun_newproxytype(type);
-    ForeignTypeObject *ftype = ForeignProxy_NewType(type, fun_type);
-    ftype->ft_constructor = (PyObject *) foreignclosure_newtype(fun_type);
+    PyTypeObject *fun_type = funproxy_newproxytype(type);
+    ForeignTypeObject *ftype = Proxy_NewType(type, fun_type);
+    ftype->ft_constructor = (PyObject *) closureproxy_newtype(fun_type);
     return ftype;
 }

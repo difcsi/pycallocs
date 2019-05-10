@@ -1,57 +1,57 @@
 #include "foreign_library.h"
 
-static PyObject *foreignproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+static PyObject *proxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
-    ForeignProxyObject *obj = (ForeignProxyObject *) type->tp_alloc(type, 0);
+    ProxyObject *obj = (ProxyObject *) type->tp_alloc(type, 0);
     if (obj)
     {
-        obj->fpo_ptr = PyMem_Malloc(type->tp_itemsize);
-        obj->fpo_allocator = (PyObject *) obj;
+        obj->p_ptr = PyMem_Malloc(type->tp_itemsize);
+        obj->p_allocator = (PyObject *) obj;
     }
     return (PyObject *) obj;
 }
 
-static void foreignproxy_dealloc(ForeignProxyObject *self)
+static void proxy_dealloc(ProxyObject *self)
 {
-    if (self->fpo_allocator == (PyObject *) self) PyMem_Free(self->fpo_ptr);
-    else Py_DECREF(self->fpo_allocator);
+    if (self->p_allocator == (PyObject *) self) PyMem_Free(self->p_ptr);
+    else Py_DECREF(self->p_allocator);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
-PyTypeObject ForeignProxy_Type = {
+PyTypeObject Proxy_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "allocs.ForeignProxy",
+    .tp_name = "allocs.Proxy",
     .tp_doc = "Base type for foreign proxy objects",
-    .tp_basicsize = sizeof(ForeignProxyObject),
+    .tp_basicsize = sizeof(ProxyObject),
     .tp_itemsize = 0, // Size of the underlying object
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-    .tp_new = foreignproxy_new,
-    .tp_dealloc = (destructor) foreignproxy_dealloc,
+    .tp_new = proxy_new,
+    .tp_dealloc = (destructor) proxy_dealloc,
 };
 
-static PyObject *foreignproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+static PyObject *proxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
-    ForeignProxyObject *obj = PyObject_New(ForeignProxyObject, proxy_type);
+    ProxyObject *obj = PyObject_New(ProxyObject, proxy_type);
     if (obj)
     {
         if (allocator)
         {
-            obj->fpo_ptr = data;
+            obj->p_ptr = data;
             Py_INCREF(allocator);
-            obj->fpo_allocator = allocator;
+            obj->p_allocator = allocator;
         }
         else
         {
-            obj->fpo_ptr = PyMem_Malloc(proxy_type->tp_itemsize);
-            memcpy(obj->fpo_ptr, data, proxy_type->tp_itemsize);
-            obj->fpo_allocator = (PyObject *) obj;
+            obj->p_ptr = PyMem_Malloc(proxy_type->tp_itemsize);
+            memcpy(obj->p_ptr, data, proxy_type->tp_itemsize);
+            obj->p_allocator = (PyObject *) obj;
         }
     }
     return (PyObject *) obj;
 }
 
-static int foreignproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
+static int proxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
     if (!PyObject_TypeCheck(obj, proxy_type))
@@ -60,19 +60,19 @@ static int foreignproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *
             proxy_type->tp_name, Py_TYPE(obj)->tp_name);
         return -1;
     }
-    ForeignProxyObject *proxy = (ForeignProxyObject *) obj;
-    memcpy(dest, proxy->fpo_ptr, proxy_type->tp_itemsize);
+    ProxyObject *proxy = (ProxyObject *) obj;
+    memcpy(dest, proxy->p_ptr, proxy_type->tp_itemsize);
     return 0;
 }
 
 // Steals reference to proxytype
-ForeignTypeObject *ForeignProxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype)
+ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype)
 {
     ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
     ftype->ft_type = type;
     ftype->ft_proxy_type = proxytype;
     ftype->ft_constructor = NULL;
-    ftype->ft_getfrom = foreignproxy_getfrom;
-    ftype->ft_storeinto = foreignproxy_storeinto;
+    ftype->ft_getfrom = proxy_getfrom;
+    ftype->ft_storeinto = proxy_storeinto;
     return ftype;
 }
