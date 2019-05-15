@@ -241,5 +241,6 @@ void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *typ
                 proxytype->tp_getset[i_field].set = (setter) compositeproxy_setfield;
             }
         }
+        else PyErr_Clear();
     }
 }
