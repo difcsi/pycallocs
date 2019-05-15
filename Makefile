@@ -9,10 +9,10 @@ tests: install
 	make -C tests
 
 install: build venv
-	. venv/bin/activate && $(PYTHON) setup.py install
+	. venv/bin/activate && python setup.py install
 
 venv:
-	virtualenv -p $(PYTHON) venv
+	$(PYTHON) -m venv venv
 
 clean:
 	rm -rf venv build *.pyc
