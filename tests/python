@@ -1,4 +1,4 @@
 #!/bin/bash
 
 . ../venv/bin/activate
-LD_PRELOAD=../../liballocs/lib/liballocs_preload.so python3 $*
+LD_PRELOAD=../../libcrunch/lib/libcrunch_preload.so python $*

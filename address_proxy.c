@@ -1,4 +1,5 @@
 #include "foreign_library.h"
+#include <libcrunch.h>
 
 typedef struct {
     PyTypeObject tp_base;
@@ -20,28 +21,48 @@ PyTypeObject AddressProxy_Metatype = {
     .tp_new = addrproxytype_new,
 };
 
-static PyObject *addrproxy_item(ProxyObject *self, Py_ssize_t index)
+typedef struct {
+    ProxyObject p_base;
+    Py_ssize_t ap_length;
+} AddressProxyObject;
+
+static Py_ssize_t addrproxy_length(AddressProxyObject *self)
 {
-    // TODO: Check array length
-    void *item = self->p_ptr + index * Py_TYPE(self)->tp_itemsize;
-    ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
-    return itemtype->ft_getfrom(item, itemtype, self->p_allocator);
+    return self->ap_length;
 }
 
-static int addrproxy_ass_item(ProxyObject *self, Py_ssize_t index, PyObject *value)
+static PyObject *addrproxy_item(AddressProxyObject *self, Py_ssize_t index)
 {
-    // TODO: Check array length
-    void *item = self->p_ptr + index * Py_TYPE(self)->tp_itemsize;
+    if (index >= self->ap_length)
+    {
+        PyErr_SetString(PyExc_IndexError, "address proxy index out of range");
+        return NULL;
+    }
+    void *item = self->p_base.p_ptr + index * Py_TYPE(self)->tp_itemsize;
+    ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
+    return itemtype->ft_getfrom(item, itemtype, self->p_base.p_allocator);
+}
+
+static int addrproxy_ass_item(AddressProxyObject *self, Py_ssize_t index, PyObject *value)
+{
+    if (index >= self->ap_length)
+    {
+        PyErr_SetString(PyExc_IndexError, "address proxy index out of range");
+        return -1;
+    }
+    void *item = self->p_base.p_ptr + index * Py_TYPE(self)->tp_itemsize;
     ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
     return itemtype->ft_storeinto(value, item, itemtype);
 }
 
 PySequenceMethods addrproxy_sequencemethods = {
+    .sq_length = (lenfunc) addrproxy_length,
     .sq_item = (ssizeargfunc) addrproxy_item,
     .sq_ass_item = (ssizeobjargproc) addrproxy_ass_item,
 };
 
 PySequenceMethods addrproxy_sequencemethods_readonly = {
+    .sq_length = (lenfunc) addrproxy_length,
     .sq_item = (ssizeargfunc) addrproxy_item,
 };
 
@@ -52,14 +73,23 @@ static PyObject *addrproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwa
     return NULL;
 }
 
-static PyObject *addrproxy_repr(ProxyObject *self)
+static PyObject *addrproxy_repr(AddressProxyObject *self)
 {
-    // TODO: Show all the elements in case of an array
-    PyObject *item_obj = addrproxy_item(self, 0);
-    PyObject *item_repr = PyObject_Repr(item_obj);
-    Py_DECREF(item_obj);
-    PyObject *repr = PyUnicode_FromFormat("<[%U]>", item_repr);
-    Py_DECREF(item_repr);
+    PyObject *repr_acc = PyUnicode_New(0, 0);
+    for (int i = 0; i < self->ap_length; ++i)
+    {
+        PyObject *item_obj = addrproxy_item(self, i);
+        PyObject *item_repr = PyObject_Repr(item_obj);
+        Py_DECREF(item_obj);
+        const char* fmt = i == 0 ? "%U%U" : "%U, %U";
+        PyObject *next_repr_acc = PyUnicode_FromFormat(fmt, repr_acc, item_repr);
+        Py_DECREF(repr_acc);
+        Py_DECREF(item_repr);
+        repr_acc = next_repr_acc;
+    }
+
+    PyObject *repr = PyUnicode_FromFormat("<[%U]>", repr_acc);
+    Py_DECREF(repr_acc);
     return repr;
 }
 
@@ -70,13 +100,25 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type, PyObject
     // NULL -> None
     if (!ptr) Py_RETURN_NONE;
 
-    ProxyObject *obj = PyObject_New(ProxyObject, type->ft_proxy_type);
+    AddressProxyObject *obj = PyObject_New(AddressProxyObject, type->ft_proxy_type);
     if (obj)
     {
-        obj->p_ptr = ptr;
+        obj->p_base.p_ptr = ptr;
         // TODO: find a safe allocator
         Py_INCREF(Py_None);
-        obj->p_allocator = Py_None;
+        obj->p_base.p_allocator = Py_None;
+
+        // Compute the length of the pointed array (= 1 for pointer to single cell)
+        AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
+        const struct uniqtype *ptyp = proxy_type->pointee_type->ft_type;
+        __libcrunch_bounds_t bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
+        // If ptr is not the base, it is a single element inside a larger array
+        if (__libcrunch_get_base(bounds, ptr) == ptr)
+        {
+            unsigned long byte_size = __libcrunch_get_size(bounds, ptr);
+            obj->ap_length = byte_size / UNIQTYPE_SIZE_IN_BYTES(ptyp);
+        }
+        else obj->ap_length = 1;
     }
     return (PyObject *) obj;
 }
@@ -126,6 +168,7 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     htype->tp_base = (PyTypeObject){
         .ob_base = htype->tp_base.ob_base, // <- Keep the object base
         .tp_name = UNIQTYPE_NAME(type),
+        .tp_basicsize = sizeof(AddressProxyObject),
         .tp_itemsize = UNIQTYPE_SIZE_IN_BYTES(pointee_type),
         .tp_base = &Proxy_Type,
         .tp_new = addrproxy_new,
@@ -150,7 +193,8 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
 
     if (PyType_Ready((PyTypeObject *) htype) < 0)
     {
-        Py_DECREF(htype);
+        Py_DECREF(pointee_ftype);
+        PyObject_GC_Del(htype);
         return NULL;
     }
 

@@ -1,15 +1,13 @@
 from distutils.core import setup, Extension
 from os import environ
 
-try:
-    LIBALLOCS_DIR = environ['LIBALLOCS_DIR']
-except KeyError:
-    raise EnvironmentError("You must set the value of the environement variable LIBALLOCS_DIR")
+LIBALLOCS_DIR = environ['LIBALLOCS_DIR']
+LIBCRUNCH_DIR = environ['LIBCRUNCH_DIR']
 
 allocs = Extension('allocs',
-                   include_dirs = [LIBALLOCS_DIR+'/include'],
+                   include_dirs = [LIBALLOCS_DIR+'/include', LIBCRUNCH_DIR+'/include'],
                    libraries = ['dl', 'ffi'],
-                   library_dirs = [LIBALLOCS_DIR+'/lib'],
+                   library_dirs = [],
                    sources = ['allocs_module.c', 'library_loader.c',
                        'proxy.c', 'foreign_type.c', 'foreign_basetype.c',
                        'function_proxy.c', 'composite_proxy.c',
