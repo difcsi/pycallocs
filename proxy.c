@@ -29,7 +29,7 @@ PyTypeObject Proxy_Type = {
     .tp_dealloc = (destructor) proxy_dealloc,
 };
 
-static PyObject *proxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type, PyObject *allocator)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
     ProxyObject *obj = PyObject_New(ProxyObject, proxy_type);
@@ -43,15 +43,15 @@ static PyObject *proxy_getfrom(void *data, ForeignTypeObject *type, PyObject *al
         }
         else
         {
-            obj->p_ptr = PyMem_Malloc(proxy_type->tp_itemsize);
-            memcpy(obj->p_ptr, data, proxy_type->tp_itemsize);
+            obj->p_ptr = PyMem_Malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+            memcpy(obj->p_ptr, data, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
             obj->p_allocator = (PyObject *) obj;
         }
     }
     return (PyObject *) obj;
 }
 
-static int proxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
+int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
     if (!PyObject_TypeCheck(obj, proxy_type))
@@ -61,7 +61,7 @@ static int proxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
         return -1;
     }
     ProxyObject *proxy = (ProxyObject *) obj;
-    memcpy(dest, proxy->p_ptr, proxy_type->tp_itemsize);
+    memcpy(dest, proxy->p_ptr, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
     return 0;
 }
 
@@ -72,7 +72,7 @@ ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *prox
     ftype->ft_type = type;
     ftype->ft_proxy_type = proxytype;
     ftype->ft_constructor = NULL;
-    ftype->ft_getfrom = proxy_getfrom;
-    ftype->ft_storeinto = proxy_storeinto;
+    ftype->ft_getfrom = Proxy_GetFrom;
+    ftype->ft_storeinto = Proxy_StoreInto;
     return ftype;
 }

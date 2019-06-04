@@ -29,21 +29,25 @@ static PyObject *foreigntype_ptr(ForeignTypeObject *self)
     return (PyObject *) ForeignType_GetOrCreate(ptrtype);
 }
 
-static PyObject *foreigntype_array(ForeignTypeObject *self, PyObject *arg)
+static PyObject *foreigntype_array(ForeignTypeObject *self)
 {
-    Py_RETURN_NOTIMPLEMENTED;
+    const struct uniqtype *arrtype =
+        __liballocs_get_or_create_array_type((struct uniqtype*) self->ft_type, 0);
+    if (!arrtype)
+    {
+        PyErr_Format(PyExc_ValueError, "Cannot create array of type '%s'",
+                UNIQTYPE_NAME(self->ft_type));
+        return NULL;
+    }
+    return (PyObject *) ForeignType_GetOrCreate(arrtype);
 }
 
 static PyGetSetDef foreigntype_getters[] = {
     {"ptr", (getter) foreigntype_ptr, NULL,
         "Get the type of pointers to the current type.", NULL},
-    {NULL}
-};
-
-static PyMethodDef foreigntype_methods[] = {
-    {"array", (PyCFunction) foreigntype_array, METH_O,
-        "Get the type of an array of n elements of the current type, "
-        "where n is the single parameter."},
+    {"array", (getter) foreigntype_array, NULL,
+        "Get the type of arrays to the current type, "
+        "size is fixed at object construction.", NULL},
     {NULL}
 };
 
@@ -56,7 +60,6 @@ PyTypeObject ForeignType_Type = {
     .tp_repr = (reprfunc) foreigntype_repr,
     .tp_dealloc = (destructor) foreigntype_dealloc,
     .tp_getset = foreigntype_getters,
-    .tp_methods = foreigntype_methods,
 };
 
 PyObject *void_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
@@ -76,7 +79,12 @@ int void_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 // Call the good specialization of ForeignType
 static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
 {
-    switch (type->un.info.kind)
+    if (!type)
+    {
+        PyErr_Format(PyExc_SystemError, "Called ForeignType_New with NULL parameter");
+        return NULL;
+    }
+    switch (UNIQTYPE_KIND(type))
     {
         case VOID:
         {
@@ -97,6 +105,7 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
         case ADDRESS:
             return AddressProxy_NewType(type);
         case ARRAY:
+            return ArrayProxy_NewType(type);
         case ENUMERATION:
         case SUBRANGE:
         default:
@@ -108,7 +117,7 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
 
 static void ForeignType_Init(ForeignTypeObject *self, const struct uniqtype *type)
 {
-    switch (type->un.info.kind)
+    switch (UNIQTYPE_KIND(type))
     {
         case COMPOSITE:
             CompositeProxy_InitType(self, type);
@@ -146,7 +155,7 @@ ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type)
 
 bool ForeignType_IsTriviallyCopiable(const ForeignTypeObject *type)
 {
-    switch (type->ft_type->un.info.kind)
+    switch (UNIQTYPE_KIND(type->ft_type))
     {
         case COMPOSITE:
         case ARRAY:

@@ -30,7 +30,7 @@ static void free_ffi_type_arr(ffi_type **arr)
 // The caller must call free_ffi_type on the result to free the returned type
 static ffi_type *ffi_type_for_uniqtype(const struct uniqtype *type)
 {
-    switch (type->un.info.kind)
+    switch (UNIQTYPE_KIND(type))
     {
         case VOID:
             return &ffi_type_void;

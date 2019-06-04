@@ -37,6 +37,9 @@ extern PyTypeObject ForeignType_Type;
 
 ForeignTypeObject *ForeignType_GetOrCreate(const struct uniqtype *type);
 bool ForeignType_IsTriviallyCopiable(const ForeignTypeObject *type);
+
+PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type, PyObject *allocator);
+int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type);
 ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype);
 
 extern PyTypeObject LibraryLoader_Type;
@@ -52,5 +55,6 @@ void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *typ
 
 extern PyTypeObject AddressProxy_Metatype;
 ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type);
+ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type);
 
 #endif

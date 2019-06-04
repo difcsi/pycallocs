@@ -68,9 +68,91 @@ PySequenceMethods addrproxy_sequencemethods_readonly = {
 
 static PyObject *addrproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    // TODO: Find meaningful constructors for pointers
-    PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign addresses");
-    return NULL;
+    // This constructor is not used for pointers but is provided for array types
+    // There must be exactly one sequence argument used as the array initializer
+    // TODO: Add possibility to create an array specifying size only
+    // TODO: What about explicitly sized array types ?
+    //       It's currently impossible to name them in Python
+
+    unsigned nargs = PyTuple_GET_SIZE(args);
+    if (nargs != 1 || (kwargs && PyDict_Size(kwargs)))
+    {
+        PyErr_SetString(PyExc_TypeError,
+            "AddressProxyObject.__new__ takes exactly one positional argument");
+        return NULL;
+    }
+
+    PyObject *arg = PyTuple_GET_ITEM(args, 0);
+    Py_ssize_t len = PySequence_Size(arg);
+    if (len == -1)
+    {
+        PyErr_SetString(PyExc_TypeError,
+            "AddressProxyObject.__new__ argument must be a sized sequence");
+        return NULL;
+    }
+
+    AddressProxyObject *obj = (AddressProxyObject *) type->tp_alloc(type, 0);
+    if (obj)
+    {
+        obj->p_base.p_ptr = PyMem_Malloc(len * type->tp_itemsize);
+        obj->p_base.p_allocator = (PyObject *) obj;
+        obj->ap_length = len;
+    }
+    return (PyObject *) obj;
+}
+
+static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kwargs)
+{
+    unsigned nargs = PyTuple_GET_SIZE(args);
+    if (nargs > 1 || (kwargs && PyDict_Size(kwargs)))
+    {
+        PyErr_SetString(PyExc_TypeError,
+            "AddressProxyObject.__init__ takes zero or one positional argument");
+        return -1;
+    }
+
+    // Default initialization => zero initialize the underlying array
+    if (nargs == 0)
+    {
+        memset(self->p_base.p_ptr, 0, self->ap_length * Py_TYPE(self)->tp_itemsize);
+        return 0;
+    }
+
+    PyObject *arg = PyTuple_GET_ITEM(args, 0);
+    PyObject *seqarg = PySequence_Fast(arg, "AddressProxyObject.__init__ argument must be a sequence");
+    if (!seqarg) return -1;
+
+    unsigned arglen = PySequence_Fast_GET_SIZE(seqarg);
+    if (arglen > self->ap_length)
+    {
+        PyErr_Format(PyExc_ValueError, "Sequence given is too long "
+            "to be stored at this address (only %d items)", self->ap_length);
+        Py_DECREF(seqarg);
+        return -1;
+    }
+
+    ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
+    unsigned itemsize = Py_TYPE(self)->tp_itemsize;
+    for (unsigned i = 0 ; i < arglen ; ++i)
+    {
+        PyObject *value = PySequence_Fast_GET_ITEM(seqarg, i);
+        void *item = self->p_base.p_ptr + i * itemsize;
+        if(itemtype->ft_storeinto(value, item, itemtype) < 0)
+        {
+            Py_DECREF(seqarg);
+            return -1;
+        }
+    }
+
+    // Zero initialize the rest of the array
+    if (self->ap_length > arglen)
+    {
+        void *first_uninit_item = self->p_base.p_ptr + arglen * itemsize;
+        memset(first_uninit_item, 0, (self->ap_length - arglen) * itemsize);
+    }
+
+    Py_DECREF(seqarg);
+    return 0;
 }
 
 static PyObject *addrproxy_repr(AddressProxyObject *self)
@@ -93,6 +175,23 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
     return repr;
 }
 
+// Compute the length of the pointed array (= 1 for pointer to single cell)
+static void addressproxy_initlength(AddressProxyObject *self, ForeignTypeObject *type)
+{
+    void *ptr = self->p_base.p_ptr;
+    AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
+    const struct uniqtype *ptyp = proxy_type->pointee_type->ft_type;
+
+    __libcrunch_bounds_t bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
+    // If ptr is not the base, it is a single element inside a larger array
+    if (__libcrunch_get_base(bounds, ptr) == ptr)
+    {
+        unsigned long byte_size = __libcrunch_get_size(bounds, ptr);
+        self->ap_length = byte_size / UNIQTYPE_SIZE_IN_BYTES(ptyp);
+    }
+    else self->ap_length = 1;
+}
+
 static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
 {
     void *ptr = *(void **) data; // Data is an address to a pointer
@@ -108,17 +207,7 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type, PyObject
         Py_INCREF(Py_None);
         obj->p_base.p_allocator = Py_None;
 
-        // Compute the length of the pointed array (= 1 for pointer to single cell)
-        AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
-        const struct uniqtype *ptyp = proxy_type->pointee_type->ft_type;
-        __libcrunch_bounds_t bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
-        // If ptr is not the base, it is a single element inside a larger array
-        if (__libcrunch_get_base(bounds, ptr) == ptr)
-        {
-            unsigned long byte_size = __libcrunch_get_size(bounds, ptr);
-            obj->ap_length = byte_size / UNIQTYPE_SIZE_IN_BYTES(ptyp);
-        }
-        else obj->ap_length = 1;
+        addressproxy_initlength(obj, type);
     }
     return (PyObject *) obj;
 }
@@ -172,6 +261,7 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_itemsize = UNIQTYPE_SIZE_IN_BYTES(pointee_type),
         .tp_base = &Proxy_Type,
         .tp_new = addrproxy_new,
+        .tp_init = (initproc) addrproxy_init,
         .tp_repr = (reprfunc) addrproxy_repr,
     };
 
@@ -204,5 +294,48 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     ftype->ft_constructor = NULL;
     ftype->ft_getfrom = addrproxy_getfrom;
     ftype->ft_storeinto = addrproxy_storeinto;
+    return ftype;
+}
+
+static PyObject *arrayproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+{
+    AddressProxyObject *obj = (AddressProxyObject *) Proxy_GetFrom(data, type, allocator);
+
+    if(obj)
+    {
+        // If possible take static length information from type
+        if (UNIQTYPE_HAS_KNOWN_LENGTH(type->ft_type))
+        {
+            obj->ap_length = UNIQTYPE_ARRAY_LENGTH(type->ft_type);
+        }
+        else addressproxy_initlength(obj, type);
+    }
+
+    return (PyObject *) obj;
+}
+
+static int arrayproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
+{
+    // TODO: Meaningful array copy
+    PyErr_SetString(PyExc_TypeError, "Cannot copy full arrays (for now)");
+    return -1;
+}
+
+ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
+{
+    const struct uniqtype *elem_type = type->related[0].un.t.ptr;
+    const struct uniqtype *addr_type = __liballocs_get_or_create_address_type(elem_type);
+    ForeignTypeObject *addr_ftype = ForeignType_GetOrCreate(addr_type);
+    if(!addr_ftype) return NULL;
+
+    ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
+    ftype->ft_type = type;
+    Py_INCREF(addr_ftype->ft_proxy_type);
+    ftype->ft_proxy_type = addr_ftype->ft_proxy_type;
+    Py_INCREF(addr_ftype->ft_proxy_type);
+    ftype->ft_constructor = (PyObject *) addr_ftype->ft_proxy_type;
+    Py_DECREF(addr_ftype);
+    ftype->ft_getfrom = arrayproxy_getfrom;
+    ftype->ft_storeinto = arrayproxy_storeinto;
     return ftype;
 }
