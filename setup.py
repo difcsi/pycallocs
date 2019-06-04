@@ -1,8 +1,8 @@
 from distutils.core import setup, Extension
 from os import environ
 
-LIBALLOCS_DIR = environ['LIBALLOCS_DIR']
-LIBCRUNCH_DIR = environ['LIBCRUNCH_DIR']
+LIBALLOCS_DIR = environ['LIBALLOCS']
+LIBCRUNCH_DIR = environ['LIBCRUNCH']
 
 allocs = Extension('allocs',
                    include_dirs = [LIBALLOCS_DIR+'/include', LIBCRUNCH_DIR+'/include'],
