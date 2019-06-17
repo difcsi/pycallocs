@@ -23,7 +23,7 @@ do
                 ((++success))
             fi
         else
-            echo -e "\e[1;32mSuccess (no output check)\e[0m"
+            echo -e "\e[1;33mSuccess (no output check)\e[0m"
             ((++success))
         fi
     else

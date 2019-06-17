@@ -158,6 +158,15 @@ static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kw
 
 static PyObject *addrproxy_repr(AddressProxyObject *self)
 {
+    static _Bool nested_call = 0;
+    if (nested_call)
+    {
+        // Do not print below more than one level of indirection
+        // This breaks repr infinite recursion for cyclic structs
+        return PyUnicode_FromString("<[...]>");
+    }
+    nested_call = 1;
+
     PyObject *repr_acc = PyUnicode_New(0, 0);
     for (int i = 0; i < self->ap_length; ++i)
     {
@@ -173,6 +182,7 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
 
     PyObject *repr = PyUnicode_FromFormat("<[%U]>", repr_acc);
     Py_DECREF(repr_acc);
+    nested_call = 0;
     return repr;
 }
 
