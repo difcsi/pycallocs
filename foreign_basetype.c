@@ -7,7 +7,7 @@
 # include <complex.h>
 #endif
 
-static PyObject *bool_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+static PyObject *bool_getfrom(void *data, ForeignTypeObject *type)
 {
     bool b = *(uint8_t*) data;
     if (b) Py_RETURN_TRUE;
@@ -22,7 +22,7 @@ static int bool_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 }
 
 #define DEFINE_UINT_GETSTORE(size) \
-static PyObject *uint##size##_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)\
+static PyObject *uint##size##_getfrom(void *data, ForeignTypeObject *type)\
 {\
     unsigned long long u;\
     u = *(uint##size##_t *) data;\
@@ -49,7 +49,7 @@ DEFINE_UINT_GETSTORE(32)
 DEFINE_UINT_GETSTORE(64)
 
 #define DEFINE_INT_GETSTORE(size) \
-static PyObject *int##size##_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)\
+static PyObject *int##size##_getfrom(void *data, ForeignTypeObject *type)\
 {\
     long long i;\
     i = *(int##size##_t *) data;\
@@ -118,7 +118,7 @@ static PyObject *char_to_long(PyObject* c)
     return NULL;
 }
 #define DEFINE_CHAR_GETSTORE(size) \
-static PyObject *char##size##_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)\
+static PyObject *char##size##_getfrom(void *data, ForeignTypeObject *type)\
 {\
     return PyBytes_FromStringAndSize(data, size/8);\
 }\
@@ -144,7 +144,7 @@ DEFINE_CHAR_GETSTORE(32)
 DEFINE_CHAR_GETSTORE(64)
 
 #define DEFINE_FLOAT_GETSTORE(t) \
-static PyObject *t##_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)\
+static PyObject *t##_getfrom(void *data, ForeignTypeObject *type)\
 {\
     double f;\
     f = *(t *) data;\
@@ -164,7 +164,7 @@ DEFINE_FLOAT_GETSTORE(long_double)
 
 #ifndef __STDC_NO_COMPLEX__
 #define DEFINE_COMPLEX_GETSTORE(t) \
-static PyObject *t##_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)\
+static PyObject *t##_getfrom(void *data, ForeignTypeObject *type)\
 {\
     complex double z;\
     z = *(t *) data;\
@@ -190,6 +190,7 @@ DEFINE_COMPLEX_GETSTORE(cmplx_long_double)
 if (size == sz)\
 {\
     obj->ft_getfrom = getfrom;\
+    obj->ft_copyfrom = getfrom;\
     obj->ft_storeinto = storeinto;\
     break;\
 }
@@ -208,6 +209,7 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
     {
         case DW_ATE_boolean:
             obj->ft_getfrom = bool_getfrom;
+            obj->ft_copyfrom = bool_getfrom;
             obj->ft_storeinto = bool_storeinto;
             break;
 

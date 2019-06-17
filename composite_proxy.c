@@ -47,7 +47,7 @@ static PyObject *compositeproxy_getfield(ProxyObject *self, struct field_info *f
 {
     void *field = self->p_ptr + field_info->offset;
     ForeignTypeObject *ftype = field_info->type;
-    return ftype->ft_getfrom(field, ftype, self->p_allocator);
+    return ftype->ft_getfrom(field, ftype);
 }
 
 static int compositeproxy_setfield(ProxyObject *self, PyObject *value, struct field_info *field_info)
@@ -174,7 +174,7 @@ static PyObject *compositeproxy_repr(ProxyObject *self)
 ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
 {
     int nb_fields = type->un.composite.nmemb;
-    const char **field_names = __liballocs_uniqtype_subobject_names(type);
+    const char **field_names = UNIQTYPE_COMPOSITE_SUBOBJ_NAMES(type);
     if (!field_names) nb_fields = 0; // Consider it as an incomplete struct
 
     CompositeProxyTypeObject *htype =

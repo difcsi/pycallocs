@@ -13,8 +13,8 @@ int *get_index(int *arr, int i)
 
 struct named
 {
-    char name[20];
-    void *ptr;
+    char first_name[20];
+    char last_name[20];
 };
 
 struct open_struct

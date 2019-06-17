@@ -298,7 +298,7 @@ static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds
 
     // FIXME: On big-endian architectures, we need to shift retval pointer if
     // it has been widened by libffi. For the moment assume we are little-endian
-    return ret_ftype->ft_getfrom(retval, ret_ftype, NULL);
+    return ret_ftype->ft_copyfrom(retval, ret_ftype);
 }
 
 static PyObject *funproxy_repr(ProxyObject *self)
@@ -391,7 +391,9 @@ static void closureproxy_call(ffi_cif *cif, void *ret, void **args, ClosureProxy
     for (unsigned i = 0; i < nargs; ++i)
     {
         ForeignTypeObject *arg_type = fun_type->ff_argtypes[i];
-        PyTuple_SET_ITEM(pargs, i, arg_type->ft_getfrom(args[i], arg_type, NULL));
+        // Copy to ensure that we are in the heap (so arguments can live after
+        // the function call).
+        PyTuple_SET_ITEM(pargs, i, arg_type->ft_copyfrom(args[i], arg_type));
     }
 
     PyObject *ret_obj = PyObject_CallObject(closure->fc_callable, pargs);
@@ -424,7 +426,6 @@ static PyObject *closureproxy_new(PyTypeObject *type, PyObject *args, PyObject *
     ClosureProxyObject *obj = (ClosureProxyObject *) type->tp_alloc(type, 0);
     if (obj)
     {
-        obj->ff_base.p_allocator = (PyObject *) obj;
         obj->fc_closure = ffi_closure_alloc(sizeof(ffi_closure), &obj->ff_base.p_ptr);
         Py_INCREF(callable);
         obj->fc_callable = callable;
@@ -437,12 +438,22 @@ static PyObject *closureproxy_new(PyTypeObject *type, PyObject *args, PyObject *
             Py_DECREF(obj);
             return NULL;
         }
+
+        // Register the proxy
+        Proxy_Register((ProxyObject *) obj);
+        // Do not release the manual allocation because our deallocation is
+        // special. If liballocs supports custom deallocator we should use them
+        // instead of this workaround.
+        // FIXME: Seems that this is not working because closures are not
+        // located in the heap by in mmap'ed section.
     }
     return (PyObject *) obj;
 }
 
 static void closureproxy_dealloc(ClosureProxyObject *self)
 {
+    Proxy_Unregister((ProxyObject *) self);
+
     ffi_closure_free(self->fc_closure);
     Py_DECREF(self->fc_callable);
     Py_TYPE(self)->tp_free((PyObject *) self);

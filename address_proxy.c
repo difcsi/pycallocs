@@ -40,7 +40,7 @@ static PyObject *addrproxy_item(AddressProxyObject *self, Py_ssize_t index)
     }
     void *item = self->p_base.p_ptr + index * Py_TYPE(self)->tp_itemsize;
     ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
-    return itemtype->ft_getfrom(item, itemtype, self->p_base.p_allocator);
+    return itemtype->ft_getfrom(item, itemtype);
 }
 
 static int addrproxy_ass_item(AddressProxyObject *self, Py_ssize_t index, PyObject *value)
@@ -94,9 +94,10 @@ static PyObject *addrproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwa
     AddressProxyObject *obj = (AddressProxyObject *) type->tp_alloc(type, 0);
     if (obj)
     {
-        obj->p_base.p_ptr = PyMem_Malloc(len * type->tp_itemsize);
-        obj->p_base.p_allocator = (PyObject *) obj;
+        obj->p_base.p_ptr = malloc(len * type->tp_itemsize);
         obj->ap_length = len;
+        Proxy_Register((ProxyObject *) obj);
+        free(obj->p_base.p_ptr);
     }
     return (PyObject *) obj;
 }
@@ -182,6 +183,12 @@ static void addressproxy_initlength(AddressProxyObject *self, ForeignTypeObject 
     AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
     const struct uniqtype *ptyp = proxy_type->pointee_type->ft_type;
 
+    if (UNIQTYPE_SIZE_IN_BYTES(ptyp) == 0 || !UNIQTYPE_HAS_KNOWN_LENGTH(ptyp))
+    {
+        self->ap_length = 0;
+        return;
+    }
+
     __libcrunch_bounds_t bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
     // If ptr is not the base, it is a single element inside a larger array
     if (__libcrunch_get_base(bounds, ptr) == ptr)
@@ -192,7 +199,7 @@ static void addressproxy_initlength(AddressProxyObject *self, ForeignTypeObject 
     else self->ap_length = 1;
 }
 
-static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
 {
     void *ptr = *(void **) data; // Data is an address to a pointer
 
@@ -202,22 +209,32 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type, PyObject
     AddressProxyObject *obj = PyObject_New(AddressProxyObject, type->ft_proxy_type);
     if (obj)
     {
-        obj->p_base.p_ptr = ptr;
-        // TODO: find a safe allocator
-        Py_INCREF(Py_None);
-        obj->p_base.p_allocator = Py_None;
+        // Extend lifetime of the pointed object
+        ProxyObject *base_proxy = Proxy_GetOrCreateBase(ptr);
+        if (base_proxy)
+        {
+            Proxy_AddRefTo(base_proxy, (const void **) &obj->p_base.p_ptr);
+            Py_DECREF(base_proxy);
+        }
 
+        obj->p_base.p_ptr = ptr;
         addressproxy_initlength(obj, type);
     }
     return (PyObject *) obj;
 }
+
+// Function prototype usually found in liballocs_private.h, or added by the
+// trapptrwrites CIL pass. Here we have none of these available.
+void __notify_ptr_write(const void **dest, const void *val);
 
 static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
     // None -> NULL
     if (obj == Py_None)
     {
+        __notify_ptr_write((const void **) dest, NULL);
         *(void **) dest = NULL;
+        return 0;
     }
 
     AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
@@ -225,6 +242,7 @@ static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *typ
     // Check if obj is an address proxy object
     if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type))
     {
+        __notify_ptr_write((const void **) dest, ((ProxyObject *) obj)->p_ptr);
         *(void **) dest = ((ProxyObject *) obj)->p_ptr;
         return 0;
     }
@@ -233,6 +251,7 @@ static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *typ
     PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
     if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy))
     {
+        __notify_ptr_write((const void **) dest, ((ProxyObject *) obj)->p_ptr);
         *(void **) dest = ((ProxyObject *) obj)->p_ptr;
         return 0;
     }
@@ -293,13 +312,14 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     ftype->ft_proxy_type = (PyTypeObject *) htype;
     ftype->ft_constructor = NULL;
     ftype->ft_getfrom = addrproxy_getfrom;
+    ftype->ft_copyfrom = addrproxy_getfrom;
     ftype->ft_storeinto = addrproxy_storeinto;
     return ftype;
 }
 
-static PyObject *arrayproxy_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+static PyObject *arrayproxy_getfrom(void *data, ForeignTypeObject *type)
 {
-    AddressProxyObject *obj = (AddressProxyObject *) Proxy_GetFrom(data, type, allocator);
+    AddressProxyObject *obj = (AddressProxyObject *) Proxy_GetFrom(data, type);
 
     if(obj)
     {
@@ -336,6 +356,7 @@ ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
     ftype->ft_constructor = (PyObject *) addr_ftype->ft_proxy_type;
     Py_DECREF(addr_ftype);
     ftype->ft_getfrom = arrayproxy_getfrom;
+    ftype->ft_copyfrom = NULL;
     ftype->ft_storeinto = arrayproxy_storeinto;
     return ftype;
 }

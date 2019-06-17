@@ -38,6 +38,8 @@ PyMODINIT_FUNC PyInit_allocs(void)
     if (PyType_Ready(&CompositeProxy_Metatype) < 0) return NULL;
     if (PyType_Ready(&AddressProxy_Metatype) < 0) return NULL;
 
+    Proxy_InitGCPolicy();
+
     PyObject *m = PyModule_Create(&allocsmodule);
     if (m == NULL) return NULL;
 

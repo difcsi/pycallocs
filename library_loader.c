@@ -140,7 +140,7 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
             return 0;
         }
 
-        PyObject *obj = ftype->ft_getfrom(data, ftype, (PyObject *) ctxt->loader);
+        PyObject *obj = ftype->ft_getfrom(data, ftype);
         Py_DECREF(ftype);
         if (!obj)
         {

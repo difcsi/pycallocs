@@ -62,7 +62,7 @@ PyTypeObject ForeignType_Type = {
     .tp_getset = foreigntype_getters,
 };
 
-PyObject *void_getfrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+PyObject *void_getfrom(void *data, ForeignTypeObject *type)
 {
     Py_RETURN_NONE;
 }
@@ -93,6 +93,7 @@ static ForeignTypeObject *ForeignType_New(const struct uniqtype *type)
             ftype->ft_proxy_type = NULL;
             ftype->ft_constructor = NULL;
             ftype->ft_getfrom = void_getfrom;
+            ftype->ft_copyfrom = void_getfrom;
             ftype->ft_storeinto = void_storeinto;
             return ftype;
         }

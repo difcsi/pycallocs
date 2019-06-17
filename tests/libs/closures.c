@@ -12,3 +12,17 @@ int fold_int(int nb, int (*fun)(int))
     }
     return acc;
 }
+
+struct closure_struct
+{
+    void (*fun1)(void);
+    void (*fun2)(void);
+    void (*fun3)(void);
+};
+
+void call_closure_struct(struct closure_struct* cs)
+{
+    cs->fun1();
+    cs->fun2();
+    cs->fun3();
+}

@@ -22,6 +22,22 @@ void compl_hw(struct hello_world *hw)
     hw->world = hw->hello;
 }
 
+static struct hello_world *GLOBAL_HW;
+void save_hw(struct hello_world *hw)
+{
+    GLOBAL_HW = hw;
+}
+struct hello_world *retrieve_hw()
+{
+    return GLOBAL_HW;
+}
+struct hello_world *swap_saved_hw(struct hello_world *hw)
+{
+    struct hello_world *ret_hw = GLOBAL_HW;
+    GLOBAL_HW = hw;
+    return ret_hw;
+}
+
 union quantum_cat
 {
     int dead;

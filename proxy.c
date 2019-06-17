@@ -1,23 +1,171 @@
 #include "foreign_library.h"
 
+// FIXME: Use more efficient representation than PyDict
+static PyObject *proxy_dict; // Weak reference over values (using PyLong to store refs)
+static PyObject *proxy_pointing_addr_dict; // Strong refs over values
+
+// Returns a borrowed reference
+static ProxyObject *proxy_for_addr(const void *addr)
+{
+    PyObject *key = PyLong_FromVoidPtr((void *) addr);
+    PyObject *proxy_ptr = PyDict_GetItem(proxy_dict, key);
+    Py_DECREF(key);
+    if (!proxy_ptr) return NULL;
+    return PyLong_AsVoidPtr(proxy_ptr);
+}
+
+void Proxy_AddRefTo(ProxyObject *target_proxy, const void **from)
+{
+    PyObject *from_key = PyLong_FromVoidPtr(from);
+    assert(!PyDict_Contains(proxy_pointing_addr_dict, from_key));
+    // This effectively incref target_proxy which is the desired behaviour
+    if(PyDict_SetItem(proxy_pointing_addr_dict, from_key, (PyObject *) target_proxy) < 0)
+        abort();
+    Py_DECREF(from_key);
+}
+
+static void proxy_addref(const void *target, const void **from)
+{
+    ProxyObject *target_proxy = proxy_for_addr(target);
+    // We should only be called if a proxy is registered for target
+    assert(target_proxy);
+    assert(target_proxy->p_ptr == target);
+
+    Proxy_AddRefTo(target_proxy, from);
+}
+
+static void proxy_delref(const void *target, const void **from)
+{
+    /* We can ignore the target and just delete the entry in
+     * proxy_pointing_addr_dict. */
+
+    PyObject *from_key = PyLong_FromVoidPtr(from);
+
+#ifndef NDEBUG
+    // Sanity check to be sure that we are effectively deleting what we think
+    if (target && PyDict_Contains(proxy_pointing_addr_dict, from_key) == 1)
+    {
+        ProxyObject *proxy =
+            (ProxyObject *) PyDict_GetItem(proxy_pointing_addr_dict, from_key);
+        assert(proxy->p_ptr == target);
+    }
+#endif
+
+    /* We can observe spurious calls from inexistant location.
+     * Just ignore them => No check for existing key
+     * Deleting the item from dict decref the proxy object and can trigger
+     * deletion. */
+    if (PyDict_DelItem(proxy_pointing_addr_dict, from_key) < 0)
+    {
+        PyErr_Clear();
+    }
+    Py_DECREF(from_key);
+}
+
+static int proxy_gc_policy_id = -1;
+
+void Proxy_InitGCPolicy()
+{
+    proxy_dict = PyDict_New();
+    proxy_pointing_addr_dict = PyDict_New();
+    proxy_gc_policy_id = __liballocs_register_gc_policy(proxy_addref, proxy_delref);
+}
+
+void Proxy_Register(ProxyObject *proxy)
+{
+    PyObject *proxy_key = PyLong_FromVoidPtr(proxy->p_ptr);
+    assert(!PyDict_Contains(proxy_dict, proxy_key));
+
+    // proxy_dict must only have a 'weak' reference
+    // So use a PyLong for storing it instead of storing the object
+    PyObject *proxy_ptr = PyLong_FromVoidPtr(proxy);
+    PyDict_SetItem(proxy_dict, proxy_key, proxy_ptr);
+    Py_DECREF(proxy_ptr);
+    Py_DECREF(proxy_key);
+
+    // Attach lifetime policy to the object to extend its lifetime
+    __liballocs_attach_lifetime_policy(proxy_gc_policy_id, proxy->p_ptr);
+}
+
+// Does nothing if obj has not been registered before
+// Call free on the underlying foreign object if we are the last lifetime policy
+void Proxy_Unregister(ProxyObject *proxy)
+{
+    PyObject *proxy_key = PyLong_FromVoidPtr(proxy->p_ptr);
+    PyObject *proxy_ptr = PyDict_GetItem(proxy_dict, proxy_key);
+    if (proxy_ptr && PyLong_AsVoidPtr(proxy_ptr) == proxy)
+    {
+        // This calls free on the foreign object if necessary
+        __liballocs_detach_lifetime_policy(proxy_gc_policy_id, proxy->p_ptr);
+        PyDict_DelItem(proxy_dict, proxy_key);
+    }
+    Py_DECREF(proxy_key);
+}
+
+// Return NULL or a new reference
+ProxyObject *Proxy_GetOrCreateBase(void *addr)
+{
+    // Prevent recursion inside ourself
+    static _Bool creating_base = 0;
+    if (creating_base) return NULL;
+
+    struct allocator *allocator;
+    const void *alloc_start;
+    struct uniqtype *alloc_type;
+    struct liballocs_err* err;
+    err = __liballocs_get_alloc_info(addr, &allocator, &alloc_start, NULL,
+            &alloc_type, NULL);
+    if (err || !ALLOCATOR_HANDLE_LIFETIME_INSERT(allocator) || !alloc_type)
+    {
+        return NULL;
+    }
+
+    // Check if already in proxy_dict
+    ProxyObject *proxy = proxy_for_addr(alloc_start);
+    if (proxy)
+    {
+        Py_INCREF(proxy);
+        return proxy;
+    }
+
+    ForeignTypeObject *ftyp = ForeignType_GetOrCreate(alloc_type);
+    assert(ftyp);
+    creating_base = 1;
+    proxy = (ProxyObject *) ftyp->ft_getfrom((void*) alloc_start, ftyp);
+    creating_base = 0;
+    Py_DECREF(ftyp);
+    assert(proxy);
+
+    // Register the base proxy
+    Proxy_Register(proxy);
+
+    return proxy;
+}
+
 static PyObject *proxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
     ProxyObject *obj = (ProxyObject *) type->tp_alloc(type, 0);
     if (obj)
     {
-        obj->p_ptr = PyMem_Malloc(type->tp_itemsize);
-        obj->p_allocator = (PyObject *) obj;
+        obj->p_ptr = malloc(type->tp_itemsize);
+        Proxy_Register(obj);
+        free(obj->p_ptr); // <- Release the manual allocation
+        // Note that because the Python GC policy has been attached obj->p_ptr
+        // is never freed at this point
     }
     return (PyObject *) obj;
 }
 
 static void proxy_dealloc(ProxyObject *self)
 {
-    if (self->p_allocator == (PyObject *) self) PyMem_Free(self->p_ptr);
-    else Py_DECREF(self->p_allocator);
+    Proxy_Unregister(self);
+
+    // Notify deletion of the reference
+    proxy_delref(NULL, (const void **) &self->p_ptr);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
+// TODO: Add Python GC management
 PyTypeObject Proxy_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "allocs.Proxy",
@@ -29,24 +177,37 @@ PyTypeObject Proxy_Type = {
     .tp_dealloc = (destructor) proxy_dealloc,
 };
 
-PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type, PyObject *allocator)
+PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type)
+{
+    PyTypeObject *proxy_type = type->ft_proxy_type;
+
+    ProxyObject *base_proxy = Proxy_GetOrCreateBase(data);
+    if (base_proxy && Py_TYPE(base_proxy) == type->ft_proxy_type)
+    {
+        // We can reuse the base_proxy as the result
+        return (PyObject *) base_proxy;
+    }
+
+    ProxyObject *obj = PyObject_New(ProxyObject, proxy_type);
+    if (obj)
+    {
+        if (base_proxy) Proxy_AddRefTo(base_proxy, (const void **) &obj->p_ptr);
+        obj->p_ptr = data;
+    }
+    Py_XDECREF(base_proxy);
+    return (PyObject *) obj;
+}
+
+PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
     ProxyObject *obj = PyObject_New(ProxyObject, proxy_type);
     if (obj)
     {
-        if (allocator)
-        {
-            obj->p_ptr = data;
-            Py_INCREF(allocator);
-            obj->p_allocator = allocator;
-        }
-        else
-        {
-            obj->p_ptr = PyMem_Malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
-            memcpy(obj->p_ptr, data, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
-            obj->p_allocator = (PyObject *) obj;
-        }
+        obj->p_ptr = malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        memcpy(obj->p_ptr, data, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        Proxy_Register(obj);
+        free(obj->p_ptr); // Release the manual allocation
     }
     return (PyObject *) obj;
 }
@@ -73,6 +234,7 @@ ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *prox
     ftype->ft_proxy_type = proxytype;
     ftype->ft_constructor = NULL;
     ftype->ft_getfrom = Proxy_GetFrom;
+    ftype->ft_copyfrom = Proxy_CopyFrom;
     ftype->ft_storeinto = Proxy_StoreInto;
     return ftype;
 }

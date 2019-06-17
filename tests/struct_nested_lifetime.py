@@ -8,3 +8,4 @@ del o
 
 a.data1 = 1
 a.data2 = 2
+print(a)
