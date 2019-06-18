@@ -34,6 +34,14 @@ typedef struct ForeignTypeObject {
     PyObject *(*ft_copyfrom)(void *data, struct ForeignTypeObject *type);
 
     int (*ft_storeinto)(PyObject *obj, void *dest, struct ForeignTypeObject *type);
+
+    // Returns a pointer to an existing data chunk of the current type.
+    // Return NULL on failure, and set Python exception.
+    // This field can be NULL if object of this type do not hold a pointer to
+    // the native representation.
+    // This is used instead of ft_storeinto when available to optimize libffi 
+    // function calls.
+    void *(*ft_getdataptr)(PyObject *obj, struct ForeignTypeObject *type);
 } ForeignTypeObject;
 extern PyTypeObject ForeignType_Type;
 
@@ -48,6 +56,7 @@ void Proxy_AddRefTo(ProxyObject *target_proxy, const void **from);
 PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type);
 PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type);
 int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type);
+void *Proxy_GetDataPtr(PyObject *obj, ForeignTypeObject *type);
 ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype);
 
 extern PyTypeObject LibraryLoader_Type;

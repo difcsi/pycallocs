@@ -202,6 +202,7 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
     obj->ft_type = type;
     obj->ft_proxy_type = NULL;
     obj->ft_constructor = NULL;
+    obj->ft_getdataptr = NULL;
 
     unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
 

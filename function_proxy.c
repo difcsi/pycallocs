@@ -9,6 +9,7 @@ typedef struct {
     ffi_cif *ff_cif;
     ForeignTypeObject **ff_argtypes;
     ForeignTypeObject *ff_rettype;
+    unsigned ff_argsize;
 } FunctionProxyTypeObject;
 
 static void free_ffi_type_arr(ffi_type **arr);
@@ -168,6 +169,7 @@ static int funproxytype_setup(FunctionProxyTypeObject *self)
         ffi_arg_types[narg] = NULL;
         self->ff_argtypes[narg] = NULL;
     }
+    self->ff_argsize = 0;
     for (int i = 0 ; i < narg ; ++i)
     {
         const struct uniqtype *arg_type = type->related[i+1].un.t.ptr;
@@ -182,6 +184,12 @@ static int funproxytype_setup(FunctionProxyTypeObject *self)
             ffi_arg_types[i+1] = NULL;
             self->ff_argtypes[i+1] = NULL;
             goto err_argtype;
+        }
+        if (!self->ff_argtypes[i]->ft_getdataptr)
+        {
+            // We cannot directly get a data pointer without conversion for
+            // this type. Give it some argument stack space.
+            self->ff_argsize += UNIQTYPE_SIZE_IN_BYTES(arg_type);
         }
     }
 
@@ -259,17 +267,10 @@ static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds
         return NULL;
     }
 
-    unsigned argsize = 0;
-    for (int i = 0 ; i < narg ; ++i)
-    {
-        const struct uniqtype *arg_type = type->ff_type->related[i+1].un.t.ptr;
-        argsize += UNIQTYPE_SIZE_IN_BYTES(arg_type);
-    }
-
-    // Using libffi to make calls is probably highly inefficient as each
-    // argument will be pushed to the stack twice.
+    // Using libffi to make calls is probably highly inefficient as some
+    // arguments will be pushed to the stack twice.
     void *ff_args[narg];
-    char argvals[argsize];
+    char argvals[type->ff_argsize];
     void *cur_arg = argvals;
     for (int i = 0 ; i < narg ; ++i)
     {
@@ -278,12 +279,21 @@ static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds
 
         const struct uniqtype *arg_type = type->ff_type->related[i+1].un.t.ptr;
         ForeignTypeObject *arg_ftype = type->ff_argtypes[i];
-        if (arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
+        if (arg_ftype->ft_getdataptr)
         {
-            return NULL;
+            void *data_ptr = arg_ftype->ft_getdataptr(py_arg, arg_ftype);
+            if (!data_ptr) return NULL;
+            ff_args[i] = data_ptr;
         }
-        ff_args[i] = cur_arg;
-        cur_arg += UNIQTYPE_SIZE_IN_BYTES(arg_type);
+        else
+        {
+            if (arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
+            {
+                return NULL;
+            }
+            ff_args[i] = cur_arg;
+            cur_arg += UNIQTYPE_SIZE_IN_BYTES(arg_type);
+        }
     }
 
     const struct uniqtype *ret_type = type->ff_type->related[0].un.t.ptr;

@@ -237,6 +237,23 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
 // trapptrwrites CIL pass. Here we have none of these available.
 void __notify_ptr_write(const void **dest, const void *val);
 
+static _Bool addrproxy_typecheck(PyObject *obj, ForeignTypeObject *type)
+{
+    AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
+
+    // Check if obj is an address proxy object
+    if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type)) return 1;
+
+    // Check if obj is a proxy to the pointee type
+    PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
+    if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy)) return 1;
+
+    // Else type error
+    PyErr_Format(PyExc_TypeError, "expected reference to object of type %s, got %s",
+        UNIQTYPE_NAME(proxy_type->pointee_type->ft_type), Py_TYPE(obj)->tp_name);
+    return 0;
+}
+
 static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
     // None -> NULL
@@ -247,29 +264,24 @@ static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *typ
         return 0;
     }
 
-    AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
+    if (!addrproxy_typecheck(obj, type)) return -1;
 
-    // Check if obj is an address proxy object
-    if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type))
+    __notify_ptr_write((const void **) dest, ((ProxyObject *) obj)->p_ptr);
+    *(void **) dest = ((ProxyObject *) obj)->p_ptr;
+    return 0;
+}
+
+static void *addrproxy_getdataptr(PyObject *obj, ForeignTypeObject *type)
+{
+    // None -> NULL
+    if (obj == Py_None)
     {
-        __notify_ptr_write((const void **) dest, ((ProxyObject *) obj)->p_ptr);
-        *(void **) dest = ((ProxyObject *) obj)->p_ptr;
-        return 0;
+        static void *nullptr = 0;
+        return &nullptr;
     }
 
-    // Check if obj is a proxy to the pointee type
-    PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
-    if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy))
-    {
-        __notify_ptr_write((const void **) dest, ((ProxyObject *) obj)->p_ptr);
-        *(void **) dest = ((ProxyObject *) obj)->p_ptr;
-        return 0;
-    }
-
-    // Else type error
-    PyErr_Format(PyExc_TypeError, "expected reference to object of type %s, got %s",
-        UNIQTYPE_NAME(proxy_type->pointee_type->ft_type), Py_TYPE(obj)->tp_name);
-    return -1;
+    if (addrproxy_typecheck(obj, type)) return &((ProxyObject *) obj)->p_ptr;
+    else return NULL;
 }
 
 ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
@@ -324,6 +336,7 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     ftype->ft_getfrom = addrproxy_getfrom;
     ftype->ft_copyfrom = addrproxy_getfrom;
     ftype->ft_storeinto = addrproxy_storeinto;
+    ftype->ft_getdataptr = addrproxy_getdataptr;
     return ftype;
 }
 
@@ -368,5 +381,6 @@ ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
     ftype->ft_getfrom = arrayproxy_getfrom;
     ftype->ft_copyfrom = NULL;
     ftype->ft_storeinto = arrayproxy_storeinto;
+    ftype->ft_getdataptr = NULL;
     return ftype;
 }
