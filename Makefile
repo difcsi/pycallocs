@@ -6,7 +6,7 @@ build:
 	$(PYTHON) setup.py build
 
 tests: install
-	make -C tests
+	$(MAKE) -C tests
 
 install: build venv
 	. venv/bin/activate && python setup.py install

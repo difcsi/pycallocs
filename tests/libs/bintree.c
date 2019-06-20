@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct bintree
 {
@@ -45,4 +46,11 @@ void free_bintree(struct bintree *root)
     free_bintree(root->left);
     free_bintree(root->right);
     free(root);
+}
+
+struct bintree *bst_copy_node(struct bintree *node)
+{
+    struct bintree *new_bt = malloc(sizeof(struct bintree));
+    memcpy(new_bt, node, sizeof(struct bintree));
+    return new_bt;
 }
