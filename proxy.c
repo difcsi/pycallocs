@@ -55,10 +55,13 @@ static void proxy_delref(const void *target, const void **from)
      * Just ignore them => No check for existing key
      * Deleting the item from dict decref the proxy object and can trigger
      * deletion. */
+    PyObject *type, *value, *traceback;
+    PyErr_Fetch(&type, &value, &traceback); // Save the current exception
     if (PyDict_DelItem(proxy_pointing_addr_dict, from_key) < 0)
     {
         PyErr_Clear();
     }
+    PyErr_Restore(type, value, traceback);
     Py_DECREF(from_key);
 }
 
@@ -212,7 +215,7 @@ PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
     return (PyObject *) obj;
 }
 
-// Return true if obj has the type requested, return false and set an 
+// Return true if obj has the type requested, return false and set an
 // exception on failure
 static _Bool proxy_typecheck(PyObject *obj, ForeignTypeObject *type)
 {
