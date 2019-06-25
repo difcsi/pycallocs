@@ -23,7 +23,12 @@ do
                 ((++success))
             fi
         else
-            echo -e "\e[1;33mSuccess (no output check)\e[0m"
+            if [ -s out ]
+            then
+                echo -e "\e[1;33mSuccess (unchecked output)\e[0m"
+            else
+                echo -e "\e[1;32mSuccess (no output)\e[0m"
+            fi
             ((++success))
         fi
     else

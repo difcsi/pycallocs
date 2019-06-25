@@ -171,6 +171,36 @@ static PyObject *compositeproxy_repr(ProxyObject *self)
     return repr;
 }
 
+static int compositeproxy_traverse(void *data, PyTypeObject *type, visitproc visit, void *arg)
+{
+    for (int i_field = 0 ; type->tp_getset[i_field].name ; ++i_field)
+    {
+        struct field_info *field_info = type->tp_getset[i_field].closure;
+        if (field_info->type->ft_traverse)
+        {
+            int vret = field_info->type->ft_traverse(data + field_info->offset,
+                    visit, arg, field_info->type);
+            if (vret) return vret;
+        }
+    }
+    return 0;
+}
+
+static int compositeproxy_traverse_ft(void *data, visitproc visit, void *arg, struct ForeignTypeObject *ftype)
+{
+    return compositeproxy_traverse(data, ftype->ft_proxy_type, visit, arg);
+}
+
+static int compositeproxy_traverse_py(ProxyObject *self, visitproc visit, void *arg)
+{
+    return compositeproxy_traverse(self->p_ptr, Py_TYPE(self), visit, arg);
+}
+
+static int compositeproxy_clear_py(ProxyObject *self)
+{
+    return compositeproxy_traverse(self->p_ptr, Py_TYPE(self), Proxy_ClearRef, NULL);
+}
+
 ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
 {
     int nb_fields = type->un.composite.nmemb;
@@ -206,6 +236,9 @@ ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
         .tp_getset = getsetdefs,
         .tp_init = (initproc) compositeproxy_init,
         .tp_repr = (reprfunc) compositeproxy_repr,
+        .tp_traverse = (traverseproc) compositeproxy_traverse_py,
+        .tp_clear = (inquiry) compositeproxy_clear_py,
+        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
     };
     htype->fct_fieldinfos = field_infos;
 
@@ -218,6 +251,7 @@ ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
     ForeignTypeObject *ftype = Proxy_NewType(type, (PyTypeObject *) htype);
     Py_INCREF(htype);
     ftype->ft_constructor = (PyObject *) htype;
+    ftype->ft_traverse = compositeproxy_traverse_ft;
     return ftype;
 }
 

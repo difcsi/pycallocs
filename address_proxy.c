@@ -187,7 +187,7 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
 }
 
 // Compute the length of the pointed array (= 1 for pointer to single cell)
-static void addressproxy_initlength(AddressProxyObject *self, ForeignTypeObject *type)
+static void addrproxy_initlength(AddressProxyObject *self, ForeignTypeObject *type)
 {
     void *ptr = self->p_base.p_ptr;
     AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
@@ -216,7 +216,7 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
     // NULL -> None
     if (!ptr) Py_RETURN_NONE;
 
-    AddressProxyObject *obj = PyObject_New(AddressProxyObject, type->ft_proxy_type);
+    AddressProxyObject *obj = PyObject_GC_New(AddressProxyObject, type->ft_proxy_type);
     if (obj)
     {
         // Extend lifetime of the pointed object
@@ -228,7 +228,7 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
         }
 
         obj->p_base.p_ptr = ptr;
-        addressproxy_initlength(obj, type);
+        addrproxy_initlength(obj, type);
     }
     return (PyObject *) obj;
 }
@@ -284,6 +284,26 @@ static void *addrproxy_getdataptr(PyObject *obj, ForeignTypeObject *type)
     else return NULL;
 }
 
+static int addrproxy_traverse(AddressProxyObject *self, visitproc visit, void *arg)
+{
+    ForeignTypeObject *elem_type = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
+    // Check if the elem type must be traversed
+    if (!elem_type->ft_traverse) return 0;
+
+    for (int i = 0 ; i < self->ap_length ; ++i)
+    {
+        void *item = self->p_base.p_ptr + i * Py_TYPE(self)->tp_itemsize;
+        int vret = elem_type->ft_traverse(item, visit, arg, elem_type);
+        if (vret) return vret;
+    }
+    return 0;
+}
+
+static int addrproxy_clear(AddressProxyObject *self)
+{
+    return addrproxy_traverse(self, Proxy_ClearRef, NULL);
+}
+
 ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
 {
     const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
@@ -304,6 +324,9 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_new = addrproxy_new,
         .tp_init = (initproc) addrproxy_init,
         .tp_repr = (reprfunc) addrproxy_repr,
+        .tp_traverse = (traverseproc) addrproxy_traverse,
+        .tp_clear = (inquiry) addrproxy_clear,
+        .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
     };
 
     if (pointee_type->un.base.kind == COMPOSITE)
@@ -337,6 +360,7 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     ftype->ft_copyfrom = addrproxy_getfrom;
     ftype->ft_storeinto = addrproxy_storeinto;
     ftype->ft_getdataptr = addrproxy_getdataptr;
+    ftype->ft_traverse = Proxy_TraverseRef;
     return ftype;
 }
 
@@ -351,7 +375,7 @@ static PyObject *arrayproxy_getfrom(void *data, ForeignTypeObject *type)
         {
             obj->ap_length = UNIQTYPE_ARRAY_LENGTH(type->ft_type);
         }
-        else addressproxy_initlength(obj, type);
+        else addrproxy_initlength(obj, type);
     }
 
     return (PyObject *) obj;
@@ -362,6 +386,23 @@ static int arrayproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *ty
     // TODO: Meaningful array copy
     PyErr_SetString(PyExc_TypeError, "Cannot copy full arrays (for now)");
     return -1;
+}
+
+static int arrayproxy_traverse(void *data, visitproc visit, void *arg, ForeignTypeObject *type)
+{
+    // Create a "fake" proxy object on the stack and call addrproxy_traverse
+    AddressProxyObject fake_proxy = { {
+        PyObject_HEAD_INIT(type->ft_proxy_type)
+        .p_ptr = data
+    } };
+
+    if (UNIQTYPE_HAS_KNOWN_LENGTH(type->ft_type))
+    {
+        fake_proxy.ap_length = UNIQTYPE_ARRAY_LENGTH(type->ft_type);
+    }
+    else addrproxy_initlength(&fake_proxy, type);
+
+    return addrproxy_traverse(&fake_proxy, visit, arg);
 }
 
 ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
@@ -382,5 +423,6 @@ ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
     ftype->ft_copyfrom = NULL;
     ftype->ft_storeinto = arrayproxy_storeinto;
     ftype->ft_getdataptr = NULL;
+    ftype->ft_traverse = arrayproxy_traverse;
     return ftype;
 }

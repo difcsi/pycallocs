@@ -42,6 +42,12 @@ typedef struct ForeignTypeObject {
     // This is used instead of ft_storeinto when available to optimize libffi 
     // function calls.
     void *(*ft_getdataptr)(PyObject *obj, struct ForeignTypeObject *type);
+
+    // Set for types that can be involved in reference cycles, correspond to
+    // standard CPython counterpart.
+    // Needed because we cannot create proxies for subobjects when checking for
+    // cycles.
+    int (*ft_traverse)(void *data, visitproc visit, void *arg, struct ForeignTypeObject *type);
 } ForeignTypeObject;
 extern PyTypeObject ForeignType_Type;
 
@@ -57,6 +63,8 @@ PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type);
 PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type);
 int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type);
 void *Proxy_GetDataPtr(PyObject *obj, ForeignTypeObject *type);
+int Proxy_ClearRef(PyObject *obj, void *arg);
+int Proxy_TraverseRef(void *data, visitproc visit, void *arg, ForeignTypeObject *type);
 ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype);
 
 extern PyTypeObject LibraryLoader_Type;

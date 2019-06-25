@@ -88,6 +88,9 @@ void Proxy_Register(ProxyObject *proxy)
 
     // Attach lifetime policy to the object to extend its lifetime
     __liballocs_attach_lifetime_policy(proxy_gc_policy_id, proxy->p_ptr);
+
+    // Start tracking the object with the cycle GC
+    if (PyType_IS_GC(Py_TYPE(proxy))) PyObject_GC_Track(proxy);
 }
 
 // Does nothing if obj has not been registered before
@@ -98,6 +101,9 @@ void Proxy_Unregister(ProxyObject *proxy)
     PyObject *proxy_ptr = PyDict_GetItem(proxy_dict, proxy_key);
     if (proxy_ptr && PyLong_AsVoidPtr(proxy_ptr) == proxy)
     {
+        // Stop tracking the object with the cycle GC
+        if (PyType_IS_GC(Py_TYPE(proxy))) PyObject_GC_UnTrack(proxy);
+
         // This calls free on the foreign object if necessary
         __liballocs_detach_lifetime_policy(proxy_gc_policy_id, proxy->p_ptr);
         PyDict_DelItem(proxy_dict, proxy_key);
@@ -145,6 +151,17 @@ ProxyObject *Proxy_GetOrCreateBase(void *addr)
     return proxy;
 }
 
+#define PyObject_MaybeGC_New(TYPE, typobj) \
+    (PyType_IS_GC(typobj) ? PyObject_GC_New(TYPE, typobj) : PyObject_New(TYPE, typobj))
+
+static PyObject *proxy_alloc(PyTypeObject *type, Py_ssize_t nitems)
+{
+    // We need to redefine this function to defer GC tracking.
+    // The PyObject_GC_Track call is made by Proxy_Register only for base proxies.
+    assert(nitems == 0);
+    return PyObject_MaybeGC_New(PyObject, type);
+}
+
 static PyObject *proxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
     ProxyObject *obj = (ProxyObject *) type->tp_alloc(type, 0);
@@ -168,6 +185,19 @@ static void proxy_dealloc(ProxyObject *self)
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
+static int proxy_is_gc(ProxyObject *self)
+{
+    // Should only be called for GC'd subtypes
+    assert(PyType_IS_GC(Py_TYPE(self)));
+
+    // We are GC iff we are a registered base proxy.
+    PyObject *proxy_key = PyLong_FromVoidPtr(self->p_ptr);
+    PyObject *proxy_ptr = PyDict_GetItem(proxy_dict, proxy_key);
+    int res = proxy_ptr && PyLong_AsVoidPtr(proxy_ptr) == self;
+    Py_DECREF(proxy_key);
+    return res;
+}
+
 // TODO: Add Python GC management
 PyTypeObject Proxy_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -176,8 +206,10 @@ PyTypeObject Proxy_Type = {
     .tp_basicsize = sizeof(ProxyObject),
     .tp_itemsize = 0, // Size of the underlying object
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_alloc = proxy_alloc,
     .tp_new = proxy_new,
     .tp_dealloc = (destructor) proxy_dealloc,
+    .tp_is_gc = (inquiry) proxy_is_gc,
 };
 
 PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type)
@@ -185,13 +217,14 @@ PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type)
     PyTypeObject *proxy_type = type->ft_proxy_type;
 
     ProxyObject *base_proxy = Proxy_GetOrCreateBase(data);
-    if (base_proxy && Py_TYPE(base_proxy) == type->ft_proxy_type)
+    if (base_proxy && Py_TYPE(base_proxy) == type->ft_proxy_type &&
+            base_proxy->p_ptr == data)
     {
         // We can reuse the base_proxy as the result
         return (PyObject *) base_proxy;
     }
 
-    ProxyObject *obj = PyObject_New(ProxyObject, proxy_type);
+    ProxyObject *obj = PyObject_MaybeGC_New(ProxyObject, proxy_type);
     if (obj)
     {
         if (base_proxy) Proxy_AddRefTo(base_proxy, (const void **) &obj->p_ptr);
@@ -204,7 +237,7 @@ PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type)
 PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
-    ProxyObject *obj = PyObject_New(ProxyObject, proxy_type);
+    ProxyObject *obj = PyObject_MaybeGC_New(ProxyObject, proxy_type);
     if (obj)
     {
         obj->p_ptr = malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
@@ -243,6 +276,28 @@ void *Proxy_GetDataPtr(PyObject *obj, ForeignTypeObject *type)
     return ((ProxyObject *) obj)->p_ptr;
 }
 
+int Proxy_ClearRef(PyObject *object, void *arg)
+{
+    // This function should never be called, instrad Proxy_TraverseRef
+    // should detect its address and remove the reference.
+    abort();
+}
+
+int Proxy_TraverseRef(void *data, visitproc visit, void *arg, ForeignTypeObject* type)
+{
+    // Find the base proxy referenced by the data pointer, if any
+    PyObject *key = PyLong_FromVoidPtr(data);
+    if (visit == Proxy_ClearRef)
+    {
+        proxy_delref(NULL, (const void **) data);
+        return 0;
+    }
+    PyObject *target_base_proxy = PyDict_GetItem(proxy_pointing_addr_dict, key);
+    Py_DECREF(key);
+    Py_VISIT(target_base_proxy);
+    return 0;
+}
+
 // Steals reference to proxytype
 ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *proxytype)
 {
@@ -254,5 +309,6 @@ ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *prox
     ftype->ft_copyfrom = Proxy_CopyFrom;
     ftype->ft_storeinto = Proxy_StoreInto;
     ftype->ft_getdataptr = Proxy_GetDataPtr;
+    ftype->ft_traverse = NULL;
     return ftype;
 }
