@@ -140,6 +140,26 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
     }
 }
 
+static PyObject *compositeproxy_ctor(PyObject *args, PyObject *kwds, ForeignTypeObject *type)
+{
+    ProxyObject *obj = PyObject_GC_New(ProxyObject, type->ft_proxy_type);
+    if (obj)
+    {
+        obj->p_ptr = malloc(type->ft_proxy_type->tp_itemsize);
+        __liballocs_set_alloc_type(obj->p_ptr, type->ft_type);
+        Proxy_Register(obj);
+        free(obj->p_ptr); // <- Release the manual allocation
+        // Note that because the Python GC policy has been attached obj->p_ptr
+        // is never freed at this point
+        if (compositeproxy_init(obj, args, kwds) < 0)
+        {
+            Py_DECREF(obj);
+            return NULL;
+        }
+    }
+    return (PyObject *) obj;
+}
+
 static PyObject *compositeproxy_repr(ProxyObject *self)
 {
     PyTypeObject *type = Py_TYPE(self);
@@ -249,8 +269,7 @@ ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
     }
 
     ForeignTypeObject *ftype = Proxy_NewType(type, (PyTypeObject *) htype);
-    Py_INCREF(htype);
-    ftype->ft_constructor = (PyObject *) htype;
+    ftype->ft_constructor = compositeproxy_ctor;
     ftype->ft_traverse = compositeproxy_traverse_ft;
     return ftype;
 }

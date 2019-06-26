@@ -8,7 +8,7 @@ static PyObject *foreigntype_call(ForeignTypeObject *self, PyObject *args, PyObj
         return NULL;
     }
 
-    return PyObject_Call(self->ft_constructor, args, kwargs);
+    return self->ft_constructor(args, kwargs, self);
 }
 
 static PyObject *foreigntype_repr(ForeignTypeObject *self)
@@ -19,7 +19,6 @@ static PyObject *foreigntype_repr(ForeignTypeObject *self)
 static void foreigntype_dealloc(ForeignTypeObject *self)
 {
     Py_XDECREF(self->ft_proxy_type);
-    Py_XDECREF(self->ft_constructor);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 

@@ -66,41 +66,6 @@ PySequenceMethods addrproxy_sequencemethods_readonly = {
     .sq_item = (ssizeargfunc) addrproxy_item,
 };
 
-static PyObject *addrproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
-{
-    // This constructor is not used for pointers but is provided for array types
-    // There must be exactly one sequence argument used as the array initializer
-    // TODO: Add possibility to create an array specifying size only
-    // TODO: What about explicitly sized array types ?
-    //       It's currently impossible to name them in Python
-
-    unsigned nargs = PyTuple_GET_SIZE(args);
-    if (nargs != 1 || (kwargs && PyDict_Size(kwargs)))
-    {
-        PyErr_SetString(PyExc_TypeError,
-            "AddressProxyObject.__new__ takes exactly one positional argument");
-        return NULL;
-    }
-
-    PyObject *arg = PyTuple_GET_ITEM(args, 0);
-    Py_ssize_t len = PySequence_Size(arg);
-    if (len == -1)
-    {
-        PyErr_SetString(PyExc_TypeError,
-            "AddressProxyObject.__new__ argument must be a sized sequence");
-        return NULL;
-    }
-
-    AddressProxyObject *obj = (AddressProxyObject *) type->tp_alloc(type, 0);
-    if (obj)
-    {
-        obj->p_base.p_ptr = malloc(len * type->tp_itemsize);
-        obj->ap_length = len;
-        Proxy_Register((ProxyObject *) obj);
-        free(obj->p_base.p_ptr);
-    }
-    return (PyObject *) obj;
-}
 
 static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -321,7 +286,6 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_basicsize = sizeof(AddressProxyObject),
         .tp_itemsize = UNIQTYPE_SIZE_IN_BYTES(pointee_type),
         .tp_base = &Proxy_Type,
-        .tp_new = addrproxy_new,
         .tp_init = (initproc) addrproxy_init,
         .tp_repr = (reprfunc) addrproxy_repr,
         .tp_traverse = (traverseproc) addrproxy_traverse,
@@ -362,6 +326,52 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     ftype->ft_getdataptr = addrproxy_getdataptr;
     ftype->ft_traverse = Proxy_TraverseRef;
     return ftype;
+}
+
+static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeObject *type)
+{
+    // There must be exactly one sequence argument used as the array initializer
+    // TODO: Add possibility to create an array specifying size only
+    // TODO: What about explicitly sized array types ?
+    //       It's currently impossible to name them in Python
+
+    unsigned nargs = PyTuple_GET_SIZE(args);
+    if (nargs != 1 || (kwargs && PyDict_Size(kwargs)))
+    {
+        PyErr_SetString(PyExc_TypeError,
+            "Array constructor takes exactly one positional argument");
+        return NULL;
+    }
+
+    PyObject *arg = PyTuple_GET_ITEM(args, 0);
+    Py_ssize_t len = PySequence_Size(arg);
+    if (len == -1)
+    {
+        PyErr_SetString(PyExc_TypeError,
+            "Array constructor argument must be a sized sequence");
+        return NULL;
+    }
+
+    AddressProxyObject *obj = PyObject_GC_New(AddressProxyObject, type->ft_proxy_type);
+    if (obj)
+    {
+        obj->p_base.p_ptr = malloc(len * type->ft_proxy_type->tp_itemsize);
+        obj->ap_length = len;
+
+        __liballocs_set_alloc_type(obj->p_base.p_ptr,
+            __liballocs_get_or_create_array_type(
+                UNIQTYPE_ARRAY_ELEMENT_TYPE(type->ft_type), len));
+
+        Proxy_Register((ProxyObject *) obj);
+        free(obj->p_base.p_ptr);
+
+        if (addrproxy_init(obj, args, kwargs) < 0)
+        {
+            Py_DECREF(obj);
+            return NULL;
+        }
+    }
+    return (PyObject *) obj;
 }
 
 static PyObject *arrayproxy_getfrom(void *data, ForeignTypeObject *type)
@@ -416,9 +426,8 @@ ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
     ftype->ft_type = type;
     Py_INCREF(addr_ftype->ft_proxy_type);
     ftype->ft_proxy_type = addr_ftype->ft_proxy_type;
-    Py_INCREF(addr_ftype->ft_proxy_type);
-    ftype->ft_constructor = (PyObject *) addr_ftype->ft_proxy_type;
     Py_DECREF(addr_ftype);
+    ftype->ft_constructor = arrayproxy_ctor;
     ftype->ft_getfrom = arrayproxy_getfrom;
     ftype->ft_copyfrom = NULL;
     ftype->ft_storeinto = arrayproxy_storeinto;

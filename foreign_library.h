@@ -21,7 +21,8 @@ typedef struct ForeignTypeObject {
     // If set, this must be a subtype of Proxy_Type.
     PyTypeObject *ft_proxy_type;
 
-    PyObject *ft_constructor; // Callable constructor (may be a class)
+    // Function called to construct an object of this type.
+    PyObject *(*ft_constructor)(PyObject *args, PyObject *kwds, struct ForeignTypeObject *type);
 
     // Use the data pointer as a reference for the content if possible.
     // Can extend the lifetime of the data if necessary.

@@ -10,6 +10,7 @@ typedef struct {
     ForeignTypeObject **ff_argtypes;
     ForeignTypeObject *ff_rettype;
     unsigned ff_argsize;
+    PyTypeObject *ff_closure_type;
 } FunctionProxyTypeObject;
 
 static void free_ffi_type_arr(ffi_type **arr);
@@ -357,31 +358,6 @@ static PyObject *funproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwar
     return NULL;
 }
 
-static PyTypeObject *funproxy_newproxytype(const struct uniqtype *type)
-{
-    FunctionProxyTypeObject *htype =
-        PyObject_GC_New(FunctionProxyTypeObject, &FunctionProxy_Metatype);
-
-    htype->tp_base = (PyTypeObject){
-        .ob_base = htype->tp_base.ob_base,
-        .tp_name = UNIQTYPE_NAME(type), // Maybe find a better name ?
-        .tp_base = &Proxy_Type,
-        .tp_new = funproxy_new,
-        .tp_call = (ternaryfunc) funproxy_call,
-        .tp_repr = (reprfunc) funproxy_repr,
-    };
-    htype->ff_type = type;
-    htype->ff_cif = NULL;
-
-    if (PyType_Ready((PyTypeObject *) htype) < 0)
-    {
-        Py_DECREF(htype);
-        return NULL;
-    }
-
-    return (PyTypeObject *) htype;
-}
-
 typedef struct {
     ProxyObject ff_base;
     ffi_closure *fc_closure;
@@ -412,11 +388,11 @@ static void closureproxy_call(ffi_cif *cif, void *ret, void **args, ClosureProxy
     ret_type->ft_storeinto(ret_obj, ret, ret_type);
 }
 
-static PyObject *closureproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+static PyObject *closureproxy_ctor(PyObject *args, PyObject *kwds, ForeignTypeObject *ftype)
 {
-    // FIXME: Will break if subclassing
     FunctionProxyTypeObject *fun_proxy_type =
-        (FunctionProxyTypeObject *) type->tp_base;
+        (FunctionProxyTypeObject *) ftype->ft_proxy_type;
+    PyTypeObject *closure_type = fun_proxy_type->ff_closure_type;
 
     if (funproxytype_setup(fun_proxy_type) < 0) return NULL;
 
@@ -433,7 +409,7 @@ static PyObject *closureproxy_new(PyTypeObject *type, PyObject *args, PyObject *
         return NULL;
     }
 
-    ClosureProxyObject *obj = (ClosureProxyObject *) type->tp_alloc(type, 0);
+    ClosureProxyObject *obj = PyObject_New(ClosureProxyObject, closure_type);
     if (obj)
     {
         obj->fc_closure = ffi_closure_alloc(sizeof(ffi_closure), &obj->ff_base.p_ptr);
@@ -455,7 +431,7 @@ static PyObject *closureproxy_new(PyTypeObject *type, PyObject *args, PyObject *
         // special. If liballocs supports custom deallocator we should use them
         // instead of this workaround.
         // FIXME: Seems that this is not working because closures are not
-        // located in the heap by in mmap'ed section.
+        // located in the heap but in mmap'ed section.
     }
     return (PyObject *) obj;
 }
@@ -478,7 +454,6 @@ static PyTypeObject *closureproxy_newtype(PyTypeObject *funproxytype)
         .tp_name = "<foreign closure type>",
         .tp_basicsize = sizeof(ClosureProxyObject),
         .tp_base = funproxytype,
-        .tp_new = closureproxy_new,
         .tp_dealloc = (destructor) closureproxy_dealloc,
         .tp_flags = Py_TPFLAGS_DEFAULT,
     };
@@ -492,10 +467,36 @@ static PyTypeObject *closureproxy_newtype(PyTypeObject *funproxytype)
     return clostype;
 }
 
+static PyTypeObject *funproxy_newproxytype(const struct uniqtype *type)
+{
+    FunctionProxyTypeObject *htype =
+        PyObject_GC_New(FunctionProxyTypeObject, &FunctionProxy_Metatype);
+
+    htype->tp_base = (PyTypeObject){
+        .ob_base = htype->tp_base.ob_base,
+        .tp_name = UNIQTYPE_NAME(type), // Maybe find a better name ?
+        .tp_base = &Proxy_Type,
+        .tp_new = funproxy_new,
+        .tp_call = (ternaryfunc) funproxy_call,
+        .tp_repr = (reprfunc) funproxy_repr,
+    };
+    htype->ff_type = type;
+    htype->ff_cif = NULL;
+    htype->ff_closure_type = closureproxy_newtype(&htype->tp_base);
+
+    if (PyType_Ready((PyTypeObject *) htype) < 0)
+    {
+        Py_DECREF(htype);
+        return NULL;
+    }
+
+    return (PyTypeObject *) htype;
+}
+
 ForeignTypeObject *FunctionProxy_NewType(const struct uniqtype *type)
 {
     PyTypeObject *fun_type = funproxy_newproxytype(type);
     ForeignTypeObject *ftype = Proxy_NewType(type, fun_type);
-    ftype->ft_constructor = (PyObject *) closureproxy_newtype(fun_type);
+    ftype->ft_constructor = closureproxy_ctor;
     return ftype;
 }

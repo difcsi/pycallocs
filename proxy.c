@@ -151,31 +151,6 @@ ProxyObject *Proxy_GetOrCreateBase(void *addr)
     return proxy;
 }
 
-#define PyObject_MaybeGC_New(TYPE, typobj) \
-    (PyType_IS_GC(typobj) ? PyObject_GC_New(TYPE, typobj) : PyObject_New(TYPE, typobj))
-
-static PyObject *proxy_alloc(PyTypeObject *type, Py_ssize_t nitems)
-{
-    // We need to redefine this function to defer GC tracking.
-    // The PyObject_GC_Track call is made by Proxy_Register only for base proxies.
-    assert(nitems == 0);
-    return PyObject_MaybeGC_New(PyObject, type);
-}
-
-static PyObject *proxy_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
-{
-    ProxyObject *obj = (ProxyObject *) type->tp_alloc(type, 0);
-    if (obj)
-    {
-        obj->p_ptr = malloc(type->tp_itemsize);
-        Proxy_Register(obj);
-        free(obj->p_ptr); // <- Release the manual allocation
-        // Note that because the Python GC policy has been attached obj->p_ptr
-        // is never freed at this point
-    }
-    return (PyObject *) obj;
-}
-
 static void proxy_dealloc(ProxyObject *self)
 {
     Proxy_Unregister(self);
@@ -206,11 +181,12 @@ PyTypeObject Proxy_Type = {
     .tp_basicsize = sizeof(ProxyObject),
     .tp_itemsize = 0, // Size of the underlying object
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-    .tp_alloc = proxy_alloc,
-    .tp_new = proxy_new,
     .tp_dealloc = (destructor) proxy_dealloc,
     .tp_is_gc = (inquiry) proxy_is_gc,
 };
+
+#define PyObject_MaybeGC_New(TYPE, typobj) \
+    (PyType_IS_GC(typobj) ? PyObject_GC_New(TYPE, typobj) : PyObject_New(TYPE, typobj))
 
 PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type)
 {
@@ -241,6 +217,8 @@ PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
     if (obj)
     {
         obj->p_ptr = malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        __liballocs_set_alloc_type(obj->p_ptr, type->ft_type);
+        // Should memcpy copy type information ?
         memcpy(obj->p_ptr, data, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
         Proxy_Register(obj);
         free(obj->p_ptr); // Release the manual allocation
