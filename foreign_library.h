@@ -81,6 +81,8 @@ void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *typ
 
 extern PyTypeObject AddressProxy_Metatype;
 ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type);
+void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type);
 ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type);
+void ArrayProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type);
 
 #endif

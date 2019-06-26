@@ -122,6 +122,12 @@ static void ForeignType_Init(ForeignTypeObject *self, const struct uniqtype *typ
         case COMPOSITE:
             CompositeProxy_InitType(self, type);
             break;
+        case ADDRESS:
+            AddressProxy_InitType(self, type);
+            break;
+        case ARRAY:
+            ArrayProxy_InitType(self, type);
+            break;
         default:
             break;
     }

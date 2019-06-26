@@ -272,13 +272,12 @@ static int addrproxy_clear(AddressProxyObject *self)
 ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
 {
     const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
-    ForeignTypeObject *pointee_ftype = ForeignType_GetOrCreate(pointee_type);
-
-    if (!pointee_ftype) return NULL;
+    if (!pointee_type) return NULL;
 
     AddressProxyTypeObject *htype =
         PyObject_GC_NewVar(AddressProxyTypeObject, &AddressProxy_Metatype, 0);
-    htype->pointee_type = pointee_ftype;
+    if (!htype) return NULL;
+    htype->pointee_type = NULL; // Will be filled in InitType phase
 
     htype->tp_base = (PyTypeObject){
         .ob_base = htype->tp_base.ob_base, // <- Keep the object base
@@ -292,6 +291,37 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_clear = (inquiry) addrproxy_clear,
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
     };
+
+    if (PyType_Ready((PyTypeObject *) htype) < 0)
+    {
+        PyObject_GC_Del(htype);
+        return NULL;
+    }
+
+    ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
+    if (ftype)
+    {
+        ftype->ft_type = type;
+        ftype->ft_proxy_type = (PyTypeObject *) htype;
+        ftype->ft_constructor = NULL;
+        ftype->ft_getfrom = addrproxy_getfrom;
+        ftype->ft_copyfrom = addrproxy_getfrom;
+        ftype->ft_storeinto = addrproxy_storeinto;
+        ftype->ft_getdataptr = addrproxy_getdataptr;
+        ftype->ft_traverse = Proxy_TraverseRef;
+    }
+    else PyObject_GC_Del(htype);
+    return ftype;
+}
+
+void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
+{
+    const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
+    ForeignTypeObject *pointee_ftype = ForeignType_GetOrCreate(pointee_type);
+    if (!pointee_ftype) return;
+
+    AddressProxyTypeObject *htype = (AddressProxyTypeObject *) self->ft_proxy_type;
+    htype->pointee_type = pointee_ftype;
 
     if (pointee_type->un.base.kind == COMPOSITE)
     {
@@ -308,24 +338,6 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         // Disable silent copy into the array
         htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods_readonly;
     }
-
-    if (PyType_Ready((PyTypeObject *) htype) < 0)
-    {
-        Py_DECREF(pointee_ftype);
-        PyObject_GC_Del(htype);
-        return NULL;
-    }
-
-    ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
-    ftype->ft_type = type;
-    ftype->ft_proxy_type = (PyTypeObject *) htype;
-    ftype->ft_constructor = NULL;
-    ftype->ft_getfrom = addrproxy_getfrom;
-    ftype->ft_copyfrom = addrproxy_getfrom;
-    ftype->ft_storeinto = addrproxy_storeinto;
-    ftype->ft_getdataptr = addrproxy_getdataptr;
-    ftype->ft_traverse = Proxy_TraverseRef;
-    return ftype;
 }
 
 static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeObject *type)
@@ -417,21 +429,29 @@ static int arrayproxy_traverse(void *data, visitproc visit, void *arg, ForeignTy
 
 ForeignTypeObject *ArrayProxy_NewType(const struct uniqtype *type)
 {
+    ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
+    if (ftype)
+    {
+        ftype->ft_type = type;
+        ftype->ft_proxy_type = NULL; // Will be filled in InitType phase
+        ftype->ft_constructor = arrayproxy_ctor;
+        ftype->ft_getfrom = arrayproxy_getfrom;
+        ftype->ft_copyfrom = NULL;
+        ftype->ft_storeinto = arrayproxy_storeinto;
+        ftype->ft_getdataptr = NULL;
+        ftype->ft_traverse = arrayproxy_traverse;
+    }
+    return ftype;
+}
+
+void ArrayProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
+{
     const struct uniqtype *elem_type = type->related[0].un.t.ptr;
     const struct uniqtype *addr_type = __liballocs_get_or_create_address_type(elem_type);
     ForeignTypeObject *addr_ftype = ForeignType_GetOrCreate(addr_type);
-    if(!addr_ftype) return NULL;
+    if(!addr_ftype) return;
 
-    ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
-    ftype->ft_type = type;
     Py_INCREF(addr_ftype->ft_proxy_type);
-    ftype->ft_proxy_type = addr_ftype->ft_proxy_type;
+    self->ft_proxy_type = addr_ftype->ft_proxy_type;
     Py_DECREF(addr_ftype);
-    ftype->ft_constructor = arrayproxy_ctor;
-    ftype->ft_getfrom = arrayproxy_getfrom;
-    ftype->ft_copyfrom = NULL;
-    ftype->ft_storeinto = arrayproxy_storeinto;
-    ftype->ft_getdataptr = NULL;
-    ftype->ft_traverse = arrayproxy_traverse;
-    return ftype;
 }
