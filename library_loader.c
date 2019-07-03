@@ -54,7 +54,7 @@ struct add_sym_ctxt
     LibraryLoaderObject *loader;
 };
 
-static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
+static int add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
 {
     // FIXME: For many types these names will feel very weird
     char type_name[256];
@@ -67,24 +67,32 @@ static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt*
     }
 
     // TODO: Manage name clashes
-    if (PyObject_HasAttrString(ctxt->module, type_name)) return;
+    if (PyObject_HasAttrString(ctxt->module, type_name)) return 1;
 
     ForeignTypeObject *ptype = ForeignType_GetOrCreate(type);
-    if (!ptype) return;
+    if (!ptype) return -1;
 
     PyModule_AddObject(ctxt->module, type_name, (PyObject *) ptype);
 
-    switch (type->un.info.kind)
+    return 0;
+}
+
+static void recursively_add_useful_types(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
+{
+    if (!type) return;
+    switch (UNIQTYPE_KIND(type))
     {
         case VOID:
         case BASE:
+            add_type_to_module(type, ctxt);
+            return;
         case COMPOSITE:
-            if (type->un.info.kind == COMPOSITE)
+            if (add_type_to_module(type, ctxt) == 0)
             {
-                unsigned nb_memb = type->un.composite.nmemb;
+                unsigned nb_memb = UNIQTYPE_COMPOSITE_MEMBER_COUNT(type);
                 for (int i = 0; i < nb_memb; ++i)
                 {
-                    add_type_to_module(type->related[i].un.t.ptr, ctxt);
+                    recursively_add_useful_types(type->related[i].un.t.ptr, ctxt);
                 }
             }
             return;
@@ -92,18 +100,26 @@ static void add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt*
             return;
         case ARRAY:
         case SUBRANGE:
-            add_type_to_module(type->related[0].un.t.ptr, ctxt);
+            recursively_add_useful_types(UNIQTYPE_ARRAY_ELEMENT_TYPE(type), ctxt);
             return;
         case ADDRESS:
-            // TODO: check related[1] is always defined
-            add_type_to_module(type->related[1].un.t.ptr, ctxt);
+        {
+            const struct uniqtype *pointee_type = UNIQTYPE_ULTIMATE_POINTEE_TYPE(type);
+            recursively_add_useful_types(pointee_type, ctxt);
+
+            // We need to be able to create closures if it's a function type
+            // TODO: Find more user friendly function name
+            if (pointee_type && UNIQTYPE_KIND(pointee_type) == SUBPROGRAM)
+                add_type_to_module(pointee_type, ctxt);
+
             return;
+        }
         case SUBPROGRAM:
         {
             unsigned nb_subtypes = type->un.subprogram.narg + type->un.subprogram.nret;
             for (int i = 0; i < nb_subtypes; ++i)
             {
-                add_type_to_module(type->related[i].un.t.ptr, ctxt);
+                recursively_add_useful_types(type->related[i].un.t.ptr, ctxt);
             }
             return;
         }
@@ -131,7 +147,7 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
 
         const struct uniqtype *type = __liballocs_get_alloc_type(data);
         if (!type) return 0;
-        add_type_to_module(type, ctxt);
+        recursively_add_useful_types(type, ctxt);
 
         ForeignTypeObject *ftype = ForeignType_GetOrCreate(type);
         if (!ftype)
