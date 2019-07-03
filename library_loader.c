@@ -103,17 +103,8 @@ static void recursively_add_useful_types(const struct uniqtype *type, struct add
             recursively_add_useful_types(UNIQTYPE_ARRAY_ELEMENT_TYPE(type), ctxt);
             return;
         case ADDRESS:
-        {
-            const struct uniqtype *pointee_type = UNIQTYPE_ULTIMATE_POINTEE_TYPE(type);
-            recursively_add_useful_types(pointee_type, ctxt);
-
-            // We need to be able to create closures if it's a function type
-            // TODO: Find more user friendly function name
-            if (pointee_type && UNIQTYPE_KIND(pointee_type) == SUBPROGRAM)
-                add_type_to_module(pointee_type, ctxt);
-
+            recursively_add_useful_types(UNIQTYPE_ULTIMATE_POINTEE_TYPE(type), ctxt);
             return;
-        }
         case SUBPROGRAM:
         {
             unsigned nb_subtypes = type->un.subprogram.narg + type->un.subprogram.nret;

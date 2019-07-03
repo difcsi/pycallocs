@@ -31,7 +31,7 @@ static PyObject *foreigntype_ptr(ForeignTypeObject *self)
 static PyObject *foreigntype_array(ForeignTypeObject *self)
 {
     const struct uniqtype *arrtype =
-        __liballocs_get_or_create_array_type((struct uniqtype*) self->ft_type, 0);
+        __liballocs_get_or_create_flexible_array_type((struct uniqtype*) self->ft_type);
     if (!arrtype)
     {
         PyErr_Format(PyExc_ValueError, "Cannot create array of type '%s'",
@@ -50,6 +50,42 @@ static PyGetSetDef foreigntype_getters[] = {
     {NULL}
 };
 
+static PyObject *foreigntype_fun(ForeignTypeObject *self, PyObject *args)
+{
+    int nargs = PySequence_Fast_GET_SIZE(args);
+    const struct uniqtype *argtypes[nargs];
+    for (unsigned i = 0; i < nargs ; ++i)
+    {
+        PyObject *argtypobj = PySequence_Fast_GET_ITEM(args, i);
+        if (!PyObject_TypeCheck(argtypobj, &ForeignType_Type))
+        {
+            PyErr_SetString(PyExc_TypeError,
+                "ForeignType.fun takes only ForeignType arguments");
+            return NULL;
+        }
+        argtypes[i] = ((ForeignTypeObject *)argtypobj)->ft_type;
+    }
+
+    const struct uniqtype *funtype =
+        __liballocs_get_or_create_subprogram_type((struct uniqtype *) self->ft_type,
+                nargs, (struct uniqtype **) argtypes);
+    if (!funtype)
+    {
+        PyErr_Format(PyExc_ValueError, "Failed to create requested function type");
+        return NULL;
+    }
+    return (PyObject *) ForeignType_GetOrCreate(funtype);
+}
+
+static PyMethodDef foreigntype_methods[] = {
+    {"fun", (PyCFunction) foreigntype_fun, METH_VARARGS,
+        "Get a function type with the current type as return type. "
+        "All the arguments should be types, and correspond to argument types. "
+        "`ret.fun(arg)` is the types of functions taking an argument of type "
+        "arg and returning a value of type ret."},
+    {NULL}
+};
+
 PyTypeObject ForeignType_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "allocs.ForeignType",
@@ -59,6 +95,7 @@ PyTypeObject ForeignType_Type = {
     .tp_repr = (reprfunc) foreigntype_repr,
     .tp_dealloc = (destructor) foreigntype_dealloc,
     .tp_getset = foreigntype_getters,
+    .tp_methods = foreigntype_methods,
 };
 
 PyObject *void_getfrom(void *data, ForeignTypeObject *type)
