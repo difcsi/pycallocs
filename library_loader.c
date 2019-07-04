@@ -70,7 +70,11 @@ static int add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* 
     if (PyObject_HasAttrString(ctxt->module, type_name)) return 1;
 
     ForeignTypeObject *ptype = ForeignType_GetOrCreate(type);
-    if (!ptype) return -1;
+    if (!ptype)
+    {
+        PyErr_Clear();
+        return -1;
+    }
 
     PyModule_AddObject(ctxt->module, type_name, (PyObject *) ptype);
 
@@ -82,8 +86,12 @@ static void recursively_add_useful_types(const struct uniqtype *type, struct add
     if (!type) return;
     switch (UNIQTYPE_KIND(type))
     {
-        case VOID:
         case BASE:
+            // Ignore bit field types
+            if (UNIQTYPE_BASE_TYPE_BIT_SIZE(type) != 8 * UNIQTYPE_SIZE_IN_BYTES(type))
+                return;
+            // falltrough
+        case VOID:
             add_type_to_module(type, ctxt);
             return;
         case COMPOSITE:

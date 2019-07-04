@@ -275,6 +275,12 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
             break;
     }
 
+    // TODO: Manage bit fields (for the moment, just reject them)
+    if (UNIQTYPE_BASE_TYPE_BIT_SIZE(type) != 8*size)
+    {
+        PyErr_SetString(PyExc_TypeError, "Unsupported foreign bit field parameter");
+    }
+
     if (PyErr_Occurred())
     {
         Py_DECREF(obj);

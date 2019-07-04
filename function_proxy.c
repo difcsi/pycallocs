@@ -241,6 +241,7 @@ static void funproxytype_dealloc(FunctionProxyTypeObject *self)
 
         Py_DECREF(self->ff_rettype);
     }
+    Py_XDECREF(self->ff_closure_type);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
@@ -352,12 +353,6 @@ static PyObject *funproxy_repr(ProxyObject *self)
     return funsig;
 }
 
-static PyObject *funproxy_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
-{
-    PyErr_SetString(PyExc_TypeError, "Cannot directly create foreign function");
-    return NULL;
-}
-
 typedef struct {
     ProxyObject ff_base;
     ffi_closure *fc_closure;
@@ -394,7 +389,7 @@ static PyObject *closureproxy_ctor(PyObject *args, PyObject *kwds, ForeignTypeOb
         (FunctionProxyTypeObject *) ftype->ft_proxy_type;
     PyTypeObject *closure_type = fun_proxy_type->ff_closure_type;
 
-    if (funproxytype_setup(fun_proxy_type) < 0) return NULL;
+    if (!closure_type || funproxytype_setup(fun_proxy_type) < 0) return NULL;
 
     static char *keywords[] = { "callable", NULL };
     PyObject *callable;
@@ -447,7 +442,7 @@ static void closureproxy_dealloc(ClosureProxyObject *self)
 
 static PyTypeObject *closureproxy_newtype(PyTypeObject *funproxytype)
 {
-    PyTypeObject *clostype = PyObject_GC_New(PyTypeObject, &PyType_Type);
+    PyTypeObject *clostype = PyObject_GC_NewVar(PyTypeObject, &PyType_Type, 0);
 
     *clostype = (PyTypeObject){
         .ob_base = clostype->ob_base,
@@ -460,7 +455,7 @@ static PyTypeObject *closureproxy_newtype(PyTypeObject *funproxytype)
 
     if (PyType_Ready(clostype) < 0)
     {
-        Py_DECREF(clostype);
+        PyObject_GC_Del(clostype);
         return NULL;
     }
 
@@ -470,32 +465,32 @@ static PyTypeObject *closureproxy_newtype(PyTypeObject *funproxytype)
 static PyTypeObject *funproxy_newproxytype(const struct uniqtype *type)
 {
     FunctionProxyTypeObject *htype =
-        PyObject_GC_New(FunctionProxyTypeObject, &FunctionProxy_Metatype);
+        PyObject_GC_NewVar(FunctionProxyTypeObject, &FunctionProxy_Metatype, 0);
 
     htype->tp_base = (PyTypeObject){
         .ob_base = htype->tp_base.ob_base,
         .tp_name = UNIQTYPE_NAME(type), // Maybe find a better name ?
         .tp_base = &Proxy_Type,
-        .tp_new = funproxy_new,
         .tp_call = (ternaryfunc) funproxy_call,
         .tp_repr = (reprfunc) funproxy_repr,
     };
     htype->ff_type = type;
     htype->ff_cif = NULL;
-    htype->ff_closure_type = closureproxy_newtype(&htype->tp_base);
 
     if (PyType_Ready((PyTypeObject *) htype) < 0)
     {
-        Py_DECREF(htype);
+        PyObject_GC_Del(htype);
         return NULL;
     }
 
+    htype->ff_closure_type = closureproxy_newtype(&htype->tp_base);
     return (PyTypeObject *) htype;
 }
 
 ForeignTypeObject *FunctionProxy_NewType(const struct uniqtype *type)
 {
     PyTypeObject *fun_type = funproxy_newproxytype(type);
+    if (!fun_type) return NULL;
     ForeignTypeObject *ftype = Proxy_NewType(type, fun_type);
     ftype->ft_constructor = closureproxy_ctor;
     return ftype;

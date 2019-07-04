@@ -196,7 +196,7 @@ static int compositeproxy_traverse(void *data, PyTypeObject *type, visitproc vis
     for (int i_field = 0 ; type->tp_getset[i_field].name ; ++i_field)
     {
         struct field_info *field_info = type->tp_getset[i_field].closure;
-        if (field_info->type->ft_traverse)
+        if (field_info->type && field_info->type->ft_traverse)
         {
             int vret = field_info->type->ft_traverse(data + field_info->offset,
                     visit, arg, field_info->type);
@@ -264,7 +264,7 @@ ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
 
     if (PyType_Ready((PyTypeObject *) htype) < 0)
     {
-        Py_DECREF(htype);
+        PyObject_GC_Del(htype);
         return NULL;
     }
 
