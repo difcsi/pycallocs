@@ -22,6 +22,9 @@ typedef struct ForeignTypeObject {
     PyTypeObject *ft_proxy_type;
 
     // Function called to construct an object of this type.
+    // Is also called with non tuple args and NULL kwds when trying to convert
+    // arbitrary Python object to the foreign representation.
+    // Must return an object with a type matching ft_proxy_type
     PyObject *(*ft_constructor)(PyObject *args, PyObject *kwds, struct ForeignTypeObject *type);
 
     // Use the data pointer as a reference for the content if possible.
@@ -34,13 +37,18 @@ typedef struct ForeignTypeObject {
     // original pointee values).
     PyObject *(*ft_copyfrom)(void *data, struct ForeignTypeObject *type);
 
+    // Store the contents of obj inside dest using the current foreign type
+    // as the representation.
+    // Return a negative value on failure and set a Python exception.
+    // This function can (and should) try to do its best to convert any
+    // given compatible object to the foreign type.
     int (*ft_storeinto)(PyObject *obj, void *dest, struct ForeignTypeObject *type);
 
     // Returns a pointer to an existing data chunk of the current type.
-    // Return NULL on failure, and set Python exception.
-    // This field can be NULL if object of this type do not hold a pointer to
+    // Return NULL on failure, but never set Python exception.
+    // This field can be NULL if objects of this type never hold pointers to
     // the native representation.
-    // This is used instead of ft_storeinto when available to optimize libffi 
+    // This is used before ft_storeinto when available to optimize libffi
     // function calls.
     void *(*ft_getdataptr)(PyObject *obj, struct ForeignTypeObject *type);
 

@@ -9,7 +9,6 @@ typedef struct {
     ffi_cif *ff_cif;
     ForeignTypeObject **ff_argtypes;
     ForeignTypeObject *ff_rettype;
-    unsigned ff_argsize;
     PyTypeObject *ff_closure_type;
 } FunctionProxyTypeObject;
 
@@ -170,7 +169,6 @@ static int funproxytype_setup(FunctionProxyTypeObject *self)
         ffi_arg_types[narg] = NULL;
         self->ff_argtypes[narg] = NULL;
     }
-    self->ff_argsize = 0;
     for (int i = 0 ; i < narg ; ++i)
     {
         const struct uniqtype *arg_type = type->related[i+1].un.t.ptr;
@@ -185,12 +183,6 @@ static int funproxytype_setup(FunctionProxyTypeObject *self)
             ffi_arg_types[i+1] = NULL;
             self->ff_argtypes[i+1] = NULL;
             goto err_argtype;
-        }
-        if (!self->ff_argtypes[i]->ft_getdataptr)
-        {
-            // We cannot directly get a data pointer without conversion for
-            // this type. Give it some argument stack space.
-            self->ff_argsize += UNIQTYPE_SIZE_IN_BYTES(arg_type);
         }
     }
 
@@ -269,33 +261,42 @@ static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds
         return NULL;
     }
 
+    // TODO: Handle keywords arguments (need liballocs support)
+
     // Using libffi to make calls is probably highly inefficient as some
     // arguments will be pushed to the stack twice.
     void *ff_args[narg];
-    char argvals[type->ff_argsize];
+    unsigned argsize = 0;
+    for (int i = 0 ; i < narg ; ++i)
+    {
+        ForeignTypeObject *arg_ftype = type->ff_argtypes[i];
+        void *data_ptr = NULL;
+        if (arg_ftype->ft_getdataptr)
+        {
+            PyObject *py_arg = PySequence_Fast_GET_ITEM(args, i);
+
+            data_ptr = arg_ftype->ft_getdataptr(py_arg, arg_ftype);
+            ff_args[i] = data_ptr;
+        }
+        /* The argument was not extractable using getdataptr, therefore allocate
+         * stack space for storing it */
+        if (!data_ptr) argsize += UNIQTYPE_SIZE_IN_BYTES(arg_ftype->ft_type);
+    }
+
+    char argvals[argsize];
     void *cur_arg = argvals;
     for (int i = 0 ; i < narg ; ++i)
     {
-        // TODO: Use kwds arguments too
-        PyObject *py_arg = PySequence_Fast_GET_ITEM(args, i);
-
-        const struct uniqtype *arg_type = type->ff_type->related[i+1].un.t.ptr;
         ForeignTypeObject *arg_ftype = type->ff_argtypes[i];
-        if (arg_ftype->ft_getdataptr)
+        if (arg_ftype->ft_getdataptr && ff_args[i]) continue;
+
+        PyObject *py_arg = PySequence_Fast_GET_ITEM(args, i);
+        if (arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
         {
-            void *data_ptr = arg_ftype->ft_getdataptr(py_arg, arg_ftype);
-            if (!data_ptr) return NULL;
-            ff_args[i] = data_ptr;
+            return NULL;
         }
-        else
-        {
-            if (arg_ftype->ft_storeinto(py_arg, cur_arg, arg_ftype) < 0)
-            {
-                return NULL;
-            }
-            ff_args[i] = cur_arg;
-            cur_arg += UNIQTYPE_SIZE_IN_BYTES(arg_type);
-        }
+        ff_args[i] = cur_arg;
+        cur_arg += UNIQTYPE_SIZE_IN_BYTES(arg_ftype->ft_type);
     }
 
     const struct uniqtype *ret_type = type->ff_type->related[0].un.t.ptr;

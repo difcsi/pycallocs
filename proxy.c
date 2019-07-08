@@ -226,31 +226,42 @@ PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
     return (PyObject *) obj;
 }
 
-// Return true if obj has the type requested, return false and set an
-// exception on failure
-static _Bool proxy_typecheck(PyObject *obj, ForeignTypeObject *type)
-{
-    PyTypeObject *proxy_type = type->ft_proxy_type;
-    if (!PyObject_TypeCheck(obj, proxy_type))
-    {
-        PyErr_Format(PyExc_TypeError, "expected value of type %s, got %s",
-            proxy_type->tp_name, Py_TYPE(obj)->tp_name);
-        return 0;
-    }
-    return 1;
-}
-
 int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type)
 {
-    if (!proxy_typecheck(obj, type)) return -1;
-    ProxyObject *proxy = (ProxyObject *) obj;
-    memcpy(dest, proxy->p_ptr, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
-    return 0;
+    PyTypeObject *proxy_type = type->ft_proxy_type;
+    if (PyObject_TypeCheck(obj, proxy_type))
+    {
+        ProxyObject *proxy = (ProxyObject *) obj;
+        memcpy(dest, proxy->p_ptr, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        return 0;
+    }
+
+    // We must try to convert the given object to the requested foreign
+    // representation whenever possible
+    PyObject *tmpobj = NULL;
+    if (type->ft_constructor) tmpobj = type->ft_constructor(obj, NULL, type);
+    if (tmpobj)
+    {
+        ProxyObject *proxy = (ProxyObject *) tmpobj;
+        memcpy(dest, proxy->p_ptr, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        Py_DECREF(tmpobj);
+        return 0;
+    }
+    else
+    {
+        if (!PyErr_Occurred())
+        {
+            PyErr_Format(PyExc_TypeError, "expected value of type %s, got %s",
+                proxy_type->tp_name, Py_TYPE(obj)->tp_name);
+        }
+        return -1;
+    }
 }
 
 void *Proxy_GetDataPtr(PyObject *obj, ForeignTypeObject *type)
 {
-    if (!proxy_typecheck(obj, type)) return NULL;
+    PyTypeObject *proxy_type = type->ft_proxy_type;
+    if (!PyObject_TypeCheck(obj, proxy_type)) return NULL;
     return ((ProxyObject *) obj)->p_ptr;
 }
 

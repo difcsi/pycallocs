@@ -213,9 +213,7 @@ static _Bool addrproxy_typecheck(PyObject *obj, ForeignTypeObject *type)
     PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
     if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy)) return 1;
 
-    // Else type error
-    PyErr_Format(PyExc_TypeError, "expected reference to object of type %s, got %s",
-        UNIQTYPE_NAME(proxy_type->pointee_type->ft_type), Py_TYPE(obj)->tp_name);
+    // Else typecheck has failed
     return 0;
 }
 
@@ -229,7 +227,14 @@ static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *typ
         return 0;
     }
 
-    if (!addrproxy_typecheck(obj, type)) return -1;
+    if (!addrproxy_typecheck(obj, type))
+    {
+        // TODO: We might want to try to convert the data here but we need to
+        // handle stack GC first or things will go horribly wrong.
+        PyErr_Format(PyExc_TypeError, "expected reference to object of type %s, got %s",
+            UNIQTYPE_NAME(UNIQTYPE_POINTEE_TYPE(type->ft_type)), Py_TYPE(obj)->tp_name);
+        return -1;
+    }
 
     __notify_ptr_write((const void **) dest, ((ProxyObject *) obj)->p_ptr);
     *(void **) dest = ((ProxyObject *) obj)->p_ptr;

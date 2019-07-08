@@ -61,7 +61,8 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
 {
     PyTypeObject *type = Py_TYPE(self);
 
-    unsigned nargs = PyTuple_GET_SIZE(args);
+    _Bool convert_mode = !PyTuple_Check(args) && kwargs == NULL;
+    unsigned nargs = convert_mode ? 1 : PyTuple_GET_SIZE(args);
     unsigned nkwargs = kwargs ? PyDict_Size(kwargs) : 0;
 
     // Default initialization => zero initialize the whole structure
@@ -74,7 +75,7 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
     // Copy if 1 positional same type struct argument and no keyword argument
     if (nargs == 1 && nkwargs == 0)
     {
-        PyObject *arg = PyTuple_GET_ITEM(args, 0);
+        PyObject *arg = convert_mode ? args : PyTuple_GET_ITEM(args, 0);
         if (PyObject_TypeCheck(arg, type))
         {
             ProxyObject *other = (ProxyObject *) arg;
@@ -89,6 +90,41 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
             memcpy(self->p_ptr, other->p_ptr, type->tp_itemsize);
             return 0;
         }
+
+        if (PyDict_Check(arg))
+        {
+            // Convert the single dictionary argument into kwargs
+            nargs = 0;
+            kwargs = arg;
+            nkwargs = PyDict_Size(arg);
+        }
+        else
+        {
+            // Try to initialize from a plain object using attributes for all
+            // fields. All attributes must match, or we fail.
+            _Bool objinit_success = 1;
+            for (unsigned i = 0 ; type->tp_getset[i].name ; ++i)
+            {
+                PyObject *field = PyObject_GetAttrString(arg, type->tp_getset[i].name);
+                if (!field || compositeproxy_setfield(self, field,
+                            type->tp_getset[i].closure) < 0)
+                {
+                    PyErr_Clear();
+                    objinit_success = 0;
+                    break;
+                }
+            }
+            if (objinit_success) return 0;
+        }
+    }
+
+    // Reject further initialization if we are in convert mode
+    if (convert_mode && !nkwargs)
+    {
+        PyErr_Format(PyExc_TypeError,
+            "Cannot convert object of type '%s' into foreign composite '%s'",
+            Py_TYPE(args)->tp_name, type->tp_name);
+        return -1;
     }
 
     // Else we initialize fields in order or by taking a keyword argument
