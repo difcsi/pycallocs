@@ -1,20 +1,6 @@
 #include "foreign_library.h"
 #include <liballocs.h>
 
-static PyObject *allocs_get_type(PyObject *self, PyObject *obj)
-{
-    struct uniqtype *t = __liballocs_get_alloc_type(obj);
-    if (!t) Py_RETURN_NONE;
-
-    return PyUnicode_FromString(__liballocs_uniqtype_name(t));
-}
-
-static PyMethodDef AllocsMethods[] =
-{
-    {"get_type", allocs_get_type, METH_O, "Lookup type information gathered by liballocs."},
-    {NULL, NULL, 0, NULL}   /* Sentinel */
-};
-
 static struct PyModuleDef allocsmodule =
 {
     PyModuleDef_HEAD_INIT,
@@ -22,7 +8,7 @@ static struct PyModuleDef allocsmodule =
     NULL,       /* module documentation, may be NULL */
     -1,         /* size of per-interpreter state of the module,
                    or -1 if the module keeps state in global variables. */
-    AllocsMethods,
+    NULL,
     NULL,
     NULL,
     NULL,
