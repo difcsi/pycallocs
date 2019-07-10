@@ -206,12 +206,28 @@ static _Bool addrproxy_typecheck(PyObject *obj, ForeignTypeObject *type)
 {
     AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
 
-    // Check if obj is an address proxy object
+    // Check if obj is an address proxy object with the exact same pointee type
     if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type)) return 1;
 
-    // Check if obj is a proxy to the pointee type
+    // Check if obj is a proxy to the pointee type (or a "parent" object of it)
     PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
-    if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy)) return 1;
+    if (pointee_proxy && PyObject_TypeCheck(obj, pointee_proxy))
+    {
+        // Accept everything except arrays (arrays with exact same type are
+        // accepted by the first check).
+        // FIXME: What we actually want to check is if the data will be used
+        // as a pointer to array, not if the argument itself is an array.
+        // But we do not have any clue about this (yet).
+        PyTypeObject *objtyp = Py_TYPE(obj);
+        if (Py_TYPE(objtyp) != &AddressProxy_Metatype) return 1;
+        if (((AddressProxyObject *) obj)->ap_length == 1) return 1;
+    }
+
+    if (proxy_type->pointee_type->ft_type == &__uniqtype__void)
+    {
+        // We are a pointer to void: accept anything under a proxy
+        if (PyObject_TypeCheck(obj, &Proxy_Type)) return 1;
+    }
 
     // Else typecheck has failed
     return 0;
@@ -297,12 +313,6 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
     };
 
-    if (PyType_Ready((PyTypeObject *) htype) < 0)
-    {
-        PyObject_GC_Del(htype);
-        return NULL;
-    }
-
     ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
     if (ftype)
     {
@@ -321,28 +331,34 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
 
 void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
 {
+    AddressProxyTypeObject *htype = (AddressProxyTypeObject *) self->ft_proxy_type;
+
     const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
     ForeignTypeObject *pointee_ftype = ForeignType_GetOrCreate(pointee_type);
-    if (!pointee_ftype) return;
-
-    AddressProxyTypeObject *htype = (AddressProxyTypeObject *) self->ft_proxy_type;
     htype->pointee_type = pointee_ftype;
 
-    if (pointee_type->un.base.kind == COMPOSITE)
+    if (pointee_ftype)
     {
-        // Direct access to fields without [0] indirection
-        htype->tp_base.tp_getset = pointee_ftype->ft_proxy_type->tp_getset;
+        if (UNIQTYPE_IS_COMPOSITE_TYPE(pointee_type))
+        {
+            // Direct access to fields without [0] indirection
+            // Say we are a subclass of the pointee type
+            htype->tp_base.tp_base = pointee_ftype->ft_proxy_type;
+        }
+
+        if (ForeignType_IsTriviallyCopiable(pointee_ftype))
+        {
+            htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods;
+        }
+        else
+        {
+            // Disable silent copy into the array
+            htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods_readonly;
+        }
     }
 
-    if (ForeignType_IsTriviallyCopiable(pointee_ftype))
-    {
-        htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods;
-    }
-    else
-    {
-        // Disable silent copy into the array
-        htype->tp_base.tp_as_sequence = &addrproxy_sequencemethods_readonly;
-    }
+    int typready = PyType_Ready((PyTypeObject *) htype);
+    assert(typready == 0);
 }
 
 static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeObject *type)

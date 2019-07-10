@@ -298,12 +298,6 @@ ForeignTypeObject *CompositeProxy_NewType(const struct uniqtype *type)
     };
     htype->fct_fieldinfos = field_infos;
 
-    if (PyType_Ready((PyTypeObject *) htype) < 0)
-    {
-        PyObject_GC_Del(htype);
-        return NULL;
-    }
-
     ForeignTypeObject *ftype = Proxy_NewType(type, (PyTypeObject *) htype);
     ftype->ft_constructor = compositeproxy_ctor;
     ftype->ft_traverse = compositeproxy_traverse_ft;
@@ -329,7 +323,17 @@ void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *typ
             {
                 proxytype->tp_getset[i_field].set = (setter) compositeproxy_setfield;
             }
+            if (i_field == 0 && UNIQTYPE_IS_COMPOSITE_TYPE(finfo->type->ft_type))
+            {
+                // First element idiom => we are a subtype of the first member
+                // if it is also a composite type.
+                // TODO: Manage name clashes with first element
+                proxytype->tp_base = finfo->type->ft_proxy_type;
+            }
         }
         else PyErr_Clear();
     }
+
+    int typready = PyType_Ready(proxytype);
+    assert(typready == 0);
 }
