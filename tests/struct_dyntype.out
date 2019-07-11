@@ -1,0 +1,3 @@
+<[(base){id: 0}]>
+<[(derivated){base: (base){id: 1}, data: 0.0}]>
+<[(leaf){derivated: (derivated){base: (base){id: 2}, data: 3.1415927410125732}, character: b'l'}]>

@@ -8,6 +8,6 @@ del a
 
 b = m.hello_world(0, 0.0)
 
-print(m.swap_saved_hw(b)[0])
-print(m.swap_saved_hw(None)[0])
+print(m.swap_saved_hw(b))
+print(m.swap_saved_hw(None))
 

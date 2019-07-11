@@ -199,6 +199,12 @@ static PyObject *compositeproxy_ctor(PyObject *args, PyObject *kwds, ForeignType
 static PyObject *compositeproxy_repr(ProxyObject *self)
 {
     PyTypeObject *type = Py_TYPE(self);
+
+    // Break repr cycles: do not print a nested struct with an already seen type
+    int rec = Py_ReprEnter((PyObject *) type);
+    if (rec < 0) return NULL;
+    if (rec > 0) return PyUnicode_FromFormat("(%s){...}", type->tp_name);
+
     PyObject *field_repr_list = PyList_New(0);
     for (int i = 0 ; type->tp_getset[i].name ; ++i)
     {
@@ -224,6 +230,7 @@ static PyObject *compositeproxy_repr(ProxyObject *self)
     Py_DECREF(field_repr_list);
     PyObject *repr = PyUnicode_FromFormat("(%s){%U}", type->tp_name, fields_str);
     Py_DECREF(fields_str);
+    Py_ReprLeave((PyObject *) type);
     return repr;
 }
 
@@ -323,7 +330,7 @@ void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *typ
             {
                 proxytype->tp_getset[i_field].set = (setter) compositeproxy_setfield;
             }
-            if (i_field == 0 && UNIQTYPE_IS_COMPOSITE_TYPE(finfo->type->ft_type))
+            if (finfo->offset == 0 && UNIQTYPE_IS_COMPOSITE_TYPE(finfo->type->ft_type))
             {
                 // First element idiom => we are a subtype of the first member
                 // if it is also a composite type.
@@ -334,6 +341,6 @@ void CompositeProxy_InitType(ForeignTypeObject *self, const struct uniqtype *typ
         else PyErr_Clear();
     }
 
-    int typready = PyType_Ready(proxytype);
+    int typready __attribute__((unused)) = PyType_Ready(proxytype);
     assert(typready == 0);
 }

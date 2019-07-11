@@ -139,6 +139,11 @@ ProxyObject *Proxy_GetOrCreateBase(void *addr)
 
     ForeignTypeObject *ftyp = ForeignType_GetOrCreate(alloc_type);
     assert(ftyp);
+    if (!ftyp->ft_proxy_type)
+    {
+        Py_DECREF(ftyp);
+        return NULL;
+    }
     creating_base = 1;
     proxy = (ProxyObject *) ftyp->ft_getfrom((void*) alloc_start, ftyp);
     creating_base = 0;

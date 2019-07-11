@@ -123,15 +123,6 @@ static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kw
 
 static PyObject *addrproxy_repr(AddressProxyObject *self)
 {
-    static _Bool nested_call = 0;
-    if (nested_call)
-    {
-        // Do not print below more than one level of indirection
-        // This breaks repr infinite recursion for cyclic structs
-        return PyUnicode_FromString("<[...]>");
-    }
-    nested_call = 1;
-
     PyObject *repr_acc = PyUnicode_New(0, 0);
     for (int i = 0; i < self->ap_length; ++i)
     {
@@ -147,7 +138,6 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
 
     PyObject *repr = PyUnicode_FromFormat("<[%U]>", repr_acc);
     Py_DECREF(repr_acc);
-    nested_call = 0;
     return repr;
 }
 
@@ -181,11 +171,37 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
     // NULL -> None
     if (!ptr) Py_RETURN_NONE;
 
+    // Try to return directly the base proxy when not breaking the semantics
+    // This means we can return something that is not an address proxy if it
+    // would be meaningless to do indexing anyway (e.g. because we get
+    // something that does not have the exact expected type)
+    ProxyObject *base_proxy = Proxy_GetOrCreateBase(ptr);
+    if (base_proxy)
+    {
+        AddressProxyTypeObject *ptype = (AddressProxyTypeObject *) type->ft_proxy_type;
+        if (ptype->pointee_type->ft_type == &__uniqtype__void)
+        {
+            // We are decoding a pointer to void, always return the base proxy
+            // when there is one.
+            return (PyObject *) base_proxy;
+        }
+
+        // Check if the type of the base proxy is compatible
+        PyTypeObject *pointee_ptype = ptype->pointee_type->ft_proxy_type;
+        if (pointee_ptype && PyObject_TypeCheck(base_proxy, pointee_ptype))
+        {
+            // We trust liballocs for returning array base types everywhere it
+            // is meaningful.
+            // In practice, we observe that it returns arrays including in
+            // places where there is always a single value.
+            return (PyObject *) base_proxy;
+        }
+    }
+
     AddressProxyObject *obj = PyObject_GC_New(AddressProxyObject, type->ft_proxy_type);
     if (obj)
     {
         // Extend lifetime of the pointed object
-        ProxyObject *base_proxy = Proxy_GetOrCreateBase(ptr);
         if (base_proxy)
         {
             Proxy_AddRefTo(base_proxy, (const void **) &obj->p_base.p_ptr);
@@ -357,7 +373,7 @@ void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
         }
     }
 
-    int typready = PyType_Ready((PyTypeObject *) htype);
+    int typready __attribute__((unused)) = PyType_Ready((PyTypeObject *) htype);
     assert(typready == 0);
 }
 
