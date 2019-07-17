@@ -288,3 +288,16 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
     }
     return obj;
 }
+
+bool ForeignBaseType_IsChar(const struct uniqtype *type)
+{
+    if (!UNIQTYPE_IS_BASE_TYPE(type)) return 0;
+    switch (type->un.base.enc)
+    {
+        case DW_ATE_unsigned_char:
+        case DW_ATE_signed_char:
+            return 1;
+        default:
+            return 0;
+    }
+}

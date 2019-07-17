@@ -79,6 +79,7 @@ ForeignTypeObject *Proxy_NewType(const struct uniqtype *type, PyTypeObject *prox
 extern PyTypeObject LibraryLoader_Type;
 
 ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type);
+bool ForeignBaseType_IsChar(const struct uniqtype *type);
 
 extern PyTypeObject FunctionProxy_Metatype;
 ForeignTypeObject *FunctionProxy_NewType(const struct uniqtype *type);

@@ -69,7 +69,7 @@ PySequenceMethods addrproxy_sequencemethods_readonly = {
 
 static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kwargs)
 {
-    unsigned nargs = PyTuple_GET_SIZE(args);
+    unsigned nargs = args ? PyTuple_GET_SIZE(args) : 0;
     if (nargs > 1 || (kwargs && PyDict_Size(kwargs)))
     {
         PyErr_SetString(PyExc_TypeError,
@@ -138,6 +138,15 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
 
     PyObject *repr = PyUnicode_FromFormat("<[%U]>", repr_acc);
     Py_DECREF(repr_acc);
+    return repr;
+}
+
+// Special version for native strings
+static PyObject *addrproxy_str_repr(AddressProxyObject *self)
+{
+    PyObject *str_repr = PyUnicode_FromStringAndSize(self->p_base.p_ptr, self->ap_length);
+    PyObject *repr = PyUnicode_FromFormat("<'%U'>", str_repr);
+    Py_DECREF(str_repr);
     return repr;
 }
 
@@ -323,7 +332,8 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_itemsize = UNIQTYPE_SIZE_IN_BYTES(pointee_type),
         .tp_base = &Proxy_Type,
         .tp_init = (initproc) addrproxy_init,
-        .tp_repr = (reprfunc) addrproxy_repr,
+        .tp_repr = (reprfunc) (ForeignBaseType_IsChar(pointee_type) ?
+            addrproxy_str_repr : addrproxy_repr),
         .tp_traverse = (traverseproc) addrproxy_traverse,
         .tp_clear = (inquiry) addrproxy_clear,
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
@@ -380,7 +390,6 @@ void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
 static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeObject *type)
 {
     // There must be exactly one sequence argument used as the array initializer
-    // TODO: Add possibility to create an array specifying size only
     // TODO: What about explicitly sized array types ?
     //       It's currently impossible to name them in Python
 
@@ -396,15 +405,32 @@ static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeOb
     Py_ssize_t len = PySequence_Size(arg);
     if (len == -1)
     {
-        PyErr_SetString(PyExc_TypeError,
-            "Array constructor argument must be a sized sequence");
-        return NULL;
+        if (PyLong_Check(arg))
+        {
+            PyErr_Clear();
+            len = PyLong_AsSsize_t(arg);
+            if (PyErr_Occurred()) return NULL;
+            args = NULL;
+        }
+        else
+        {
+            PyErr_SetString(PyExc_TypeError,
+                "Array constructor argument must be a sized sequence");
+            return NULL;
+        }
     }
 
     AddressProxyObject *obj = PyObject_GC_New(AddressProxyObject, type->ft_proxy_type);
     if (obj)
     {
-        obj->p_base.p_ptr = malloc(len * type->ft_proxy_type->tp_itemsize);
+        Py_ssize_t itemsize = type->ft_proxy_type->tp_itemsize;
+        if (ForeignBaseType_IsChar(UNIQTYPE_ARRAY_ELEMENT_TYPE(type->ft_type)))
+        {
+            // Little hack to append a \0 character when copying a string
+            obj->p_base.p_ptr = malloc((len + 1) * itemsize);
+            memset(obj->p_base.p_ptr + len*itemsize, '\0', itemsize);
+        }
+        else obj->p_base.p_ptr = malloc(len * itemsize);
         obj->ap_length = len;
 
         __liballocs_set_alloc_type(obj->p_base.p_ptr,

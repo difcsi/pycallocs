@@ -14,3 +14,7 @@ for elt in char_arr:
     byte_recons += elt
 print(byte_recons)
 
+alpha = char.array(26)
+for i in range(26):
+    alpha[i] = chr(ord('a') + i)
+print(alpha)
