@@ -115,7 +115,7 @@ void Proxy_Unregister(ProxyObject *proxy)
 ProxyObject *Proxy_GetOrCreateBase(void *addr)
 {
     // Prevent recursion inside ourself
-    static _Bool creating_base = 0;
+    static bool creating_base = false;
     if (creating_base) return NULL;
 
     struct allocator *allocator;
@@ -144,9 +144,9 @@ ProxyObject *Proxy_GetOrCreateBase(void *addr)
         Py_DECREF(ftyp);
         return NULL;
     }
-    creating_base = 1;
+    creating_base = true;
     proxy = (ProxyObject *) ftyp->ft_getfrom((void*) alloc_start, ftyp);
-    creating_base = 0;
+    creating_base = false;
     Py_DECREF(ftyp);
     assert(proxy);
 

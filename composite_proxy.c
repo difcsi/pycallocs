@@ -61,7 +61,7 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
 {
     PyTypeObject *type = Py_TYPE(self);
 
-    _Bool convert_mode = !PyTuple_Check(args) && kwargs == NULL;
+    bool convert_mode = !PyTuple_Check(args) && kwargs == NULL;
     unsigned nargs = convert_mode ? 1 : PyTuple_GET_SIZE(args);
     unsigned nkwargs = kwargs ? PyDict_Size(kwargs) : 0;
 
@@ -102,7 +102,7 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
         {
             // Try to initialize from a plain object using attributes for all
             // fields. All attributes must match, or we fail.
-            _Bool objinit_success = 1;
+            bool objinit_success = true;
             for (unsigned i = 0 ; type->tp_getset[i].name ; ++i)
             {
                 PyObject *field = PyObject_GetAttrString(arg, type->tp_getset[i].name);
@@ -110,7 +110,7 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
                             type->tp_getset[i].closure) < 0)
                 {
                     PyErr_Clear();
-                    objinit_success = 0;
+                    objinit_success = false;
                     break;
                 }
             }

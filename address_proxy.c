@@ -218,12 +218,12 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
 // trapptrwrites CIL pass. Here we have none of these available.
 void __notify_ptr_write(const void **dest, const void *val);
 
-static _Bool addrproxy_typecheck(PyObject *obj, ForeignTypeObject *type)
+static bool addrproxy_typecheck(PyObject *obj, ForeignTypeObject *type)
 {
     AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
 
     // Check if obj is an address proxy object with the exact same pointee type
-    if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type)) return 1;
+    if (PyObject_TypeCheck(obj, (PyTypeObject *) proxy_type)) return true;
 
     // Check if obj is a proxy to the pointee type (or a "parent" object of it)
     PyTypeObject *pointee_proxy = proxy_type->pointee_type->ft_proxy_type;
@@ -235,18 +235,18 @@ static _Bool addrproxy_typecheck(PyObject *obj, ForeignTypeObject *type)
         // as a pointer to array, not if the argument itself is an array.
         // But we do not have any clue about this (yet).
         PyTypeObject *objtyp = Py_TYPE(obj);
-        if (Py_TYPE(objtyp) != &AddressProxy_Metatype) return 1;
-        if (((AddressProxyObject *) obj)->ap_length == 1) return 1;
+        if (Py_TYPE(objtyp) != &AddressProxy_Metatype) return true;
+        if (((AddressProxyObject *) obj)->ap_length == 1) return true;
     }
 
     if (proxy_type->pointee_type->ft_type == &__uniqtype__void)
     {
         // We are a pointer to void: accept anything under a proxy
-        if (PyObject_TypeCheck(obj, &Proxy_Type)) return 1;
+        if (PyObject_TypeCheck(obj, &Proxy_Type)) return true;
     }
 
     // Else typecheck has failed
-    return 0;
+    return false;
 }
 
 static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *type)
