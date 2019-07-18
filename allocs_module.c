@@ -42,5 +42,23 @@ PyMODINIT_FUNC PyInit_allocs(void)
     Py_INCREF(&AddressProxy_Metatype);
     PyModule_AddObject(m, "AddressProxyType", (PyObject *) &AddressProxy_Metatype);
 
+    // Add basic C scalar types
+#define ADD_TYPE_WITH_NAME(typname, typ) \
+    PyModule_AddObject(m, typname, (PyObject *) ForeignType_GetOrCreate(&__uniqtype__##typ))
+#define ADD_TYPE(typ) ADD_TYPE_WITH_NAME(#typ, typ)
+    ADD_TYPE(void);
+    ADD_TYPE(int);
+    ADD_TYPE(unsigned_int);
+    ADD_TYPE(signed_char);
+    ADD_TYPE(unsigned_char);
+    ADD_TYPE(long_int);
+    ADD_TYPE(unsigned_long_int);
+    ADD_TYPE(short_int);
+    ADD_TYPE_WITH_NAME("unsigned_short_int", short_unsigned_int);
+    ADD_TYPE(float);
+    ADD_TYPE(double);
+#undef ADD_TYPE
+#undef ADD_TYPE_WITH_NAME
+
     return m;
 }

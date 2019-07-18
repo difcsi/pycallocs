@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import closures
+import elflib
+elflib.__path__.append("libs/")
+from elflib import closures
 
 def hi():
     print("Hi")

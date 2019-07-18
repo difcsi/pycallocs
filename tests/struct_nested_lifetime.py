@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import nested_struct as m
+import elflib
+elflib.__path__.append("libs/")
+from elflib import nested_struct as m
 
 o = m.outstruct()
 a = o.a

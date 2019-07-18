@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import basic as m
+import elflib
+elflib.__path__.append("libs/")
+from elflib import basic as m
 
 print(m.triple(3))
 print(m.inv(True))

@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import alphanum
+import elflib
+elflib.__path__.append("libs/")
+from elflib import alphanum
 
 print(alphanum.NB_LETTERS)
 alph1 = alphanum.get_alphabet()

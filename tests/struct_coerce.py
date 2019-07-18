@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import composite as m
+import elflib
+elflib.__path__.append("libs/")
+from elflib import composite as m
 
 class Hw:
     def __init__(self, h, w):

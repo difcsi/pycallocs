@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import arrays as m
+import elflib
+elflib.__path__.append("libs/")
+from elflib import arrays as m
 
 print(m.make_empty())
 

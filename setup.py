@@ -7,8 +7,8 @@ DEBUG = environ.get('DEBUG')
 
 allocs = Extension('allocs',
                    include_dirs = [LIBALLOCS_DIR+'/include', LIBCRUNCH_DIR+'/include'],
-                   libraries = ['dl', 'ffi'],
-                   library_dirs = [],
+                   libraries = ['dl', 'ffi', 'allocs'],
+                   library_dirs = [LIBALLOCS_DIR+'/lib'],
                    sources = ['allocs_module.c', 'library_loader.c',
                        'proxy.c', 'foreign_type.c', 'foreign_basetype.c',
                        'function_proxy.c', 'composite_proxy.c',
@@ -22,4 +22,4 @@ setup (name = 'Liballocs FFI',
        author = 'Guillaume Bertholon',
        author_email = 'guillaume.bertholon@ens.fr',
        ext_modules = [allocs],
-       py_modules = ['foreign_library_finder'])
+       py_modules = ['elflib'])

@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import bigrecursive
+import elflib
+elflib.__path__.append("libs/")
+from elflib import bigrecursive
 
 # Should memleak if next two lines are decommented
 #import gc

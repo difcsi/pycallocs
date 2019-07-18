@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import bintree
+import elflib
+elflib.__path__.append("libs/")
+from elflib import bintree
 
 bt = bintree.bintree(0)
 bt.left = bintree.bintree(-1)

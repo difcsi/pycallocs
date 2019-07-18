@@ -1,6 +1,6 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import inheritance as m
+import elflib
+elflib.__path__.append("libs/")
+from elflib import inheritance as m
 
 b = m.base()
 b.id = 0

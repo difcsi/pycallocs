@@ -1,7 +1,7 @@
-import foreign_library_finder
-foreign_library_finder.search_paths.append("libs/")
-import composite
-import bintree
+import elflib
+elflib.__path__.append("libs/")
+from elflib import composite
+from elflib import bintree
 
 hw = composite.hello_world(666)
 composite.compl_hw(hw)
