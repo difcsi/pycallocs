@@ -33,7 +33,7 @@ static Py_ssize_t addrproxy_length(AddressProxyObject *self)
 
 static PyObject *addrproxy_item(AddressProxyObject *self, Py_ssize_t index)
 {
-    if (index >= self->ap_length)
+    if (index < 0 || index >= self->ap_length)
     {
         PyErr_SetString(PyExc_IndexError, "address proxy index out of range");
         return NULL;
@@ -41,6 +41,49 @@ static PyObject *addrproxy_item(AddressProxyObject *self, Py_ssize_t index)
     void *item = self->p_base.p_ptr + index * Py_TYPE(self)->tp_itemsize;
     ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
     return itemtype->ft_getfrom(item, itemtype);
+}
+
+static PyObject *addrproxy_subscript(AddressProxyObject *self, PyObject *index)
+{
+    if (PyLong_Check(index))
+    {
+        // Single element
+        Py_ssize_t i = PyLong_AsSsize_t(index);
+        return addrproxy_item(self, i < 0 ? i + self->ap_length : i);
+    }
+    else if (PySlice_Check(index))
+    {
+        Py_ssize_t start, stop, step;
+        if (PySlice_Unpack(index, &start, &stop, &step) < 0) return NULL;
+        if (step != 1)
+        {
+            PyErr_SetString(PyExc_IndexError,
+                    "cannot get a slice with custom step on an address proxy");
+            return NULL;
+        }
+        Py_ssize_t len = PySlice_AdjustIndices(self->ap_length, &start, &stop, step);
+
+        AddressProxyObject *sliceobj = PyObject_GC_New(AddressProxyObject, Py_TYPE(self));
+        if (sliceobj)
+        {
+            // Extend lifetime of the pointed object (a base should always already exist)
+            ProxyObject *base_proxy = Proxy_GetOrCreateBase(self->p_base.p_ptr);
+            assert(base_proxy);
+            Proxy_AddRefTo(base_proxy, (const void **) &sliceobj->p_base.p_ptr);
+            Py_DECREF(base_proxy);
+
+            sliceobj->p_base.p_ptr = self->p_base.p_ptr + start * Py_TYPE(self)->tp_itemsize;
+            sliceobj->ap_length = len;
+        }
+        return (PyObject *) sliceobj;
+    }
+    else
+    {
+        PyErr_Format(PyExc_TypeError,
+                "address proxy indices must be ints or slices, not %s",
+                Py_TYPE(self)->tp_name);
+        return NULL;
+    }
 }
 
 static int addrproxy_ass_item(AddressProxyObject *self, Py_ssize_t index, PyObject *value)
@@ -55,17 +98,21 @@ static int addrproxy_ass_item(AddressProxyObject *self, Py_ssize_t index, PyObje
     return itemtype->ft_storeinto(value, item, itemtype);
 }
 
-PySequenceMethods addrproxy_sequencemethods = {
+static PySequenceMethods addrproxy_sequencemethods = {
     .sq_length = (lenfunc) addrproxy_length,
     .sq_item = (ssizeargfunc) addrproxy_item,
     .sq_ass_item = (ssizeobjargproc) addrproxy_ass_item,
 };
 
-PySequenceMethods addrproxy_sequencemethods_readonly = {
+static PySequenceMethods addrproxy_sequencemethods_readonly = {
     .sq_length = (lenfunc) addrproxy_length,
     .sq_item = (ssizeargfunc) addrproxy_item,
 };
 
+static PyMappingMethods addrproxy_mappingmethods = {
+    .mp_length = (lenfunc) addrproxy_length,
+    .mp_subscript = (binaryfunc) addrproxy_subscript,
+};
 
 static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -337,6 +384,7 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
         .tp_traverse = (traverseproc) addrproxy_traverse,
         .tp_clear = (inquiry) addrproxy_clear,
         .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+        .tp_as_mapping = &addrproxy_mappingmethods,
     };
 
     ForeignTypeObject *ftype = PyObject_New(ForeignTypeObject, &ForeignType_Type);
