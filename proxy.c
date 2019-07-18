@@ -226,7 +226,7 @@ PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
         // Should memcpy copy type information ?
         memcpy(obj->p_ptr, data, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
         Proxy_Register(obj);
-        free(obj->p_ptr); // Release the manual allocation
+        __liballocs_detach_manual_dealloc_policy(obj->p_ptr);
     }
     return (PyObject *) obj;
 }

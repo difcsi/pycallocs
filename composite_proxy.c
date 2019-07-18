@@ -184,7 +184,7 @@ static PyObject *compositeproxy_ctor(PyObject *args, PyObject *kwds, ForeignType
         obj->p_ptr = malloc(type->ft_proxy_type->tp_itemsize);
         __liballocs_set_alloc_type(obj->p_ptr, type->ft_type);
         Proxy_Register(obj);
-        free(obj->p_ptr); // <- Release the manual allocation
+        __liballocs_detach_manual_dealloc_policy(obj->p_ptr);
         // Note that because the Python GC policy has been attached obj->p_ptr
         // is never freed at this point
         if (compositeproxy_init(obj, args, kwds) < 0)

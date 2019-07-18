@@ -486,7 +486,7 @@ static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeOb
                 UNIQTYPE_ARRAY_ELEMENT_TYPE(type->ft_type), len));
 
         Proxy_Register((ProxyObject *) obj);
-        free(obj->p_base.p_ptr);
+        __liballocs_detach_manual_dealloc_policy(obj->p_base.p_ptr);
 
         if (addrproxy_init(obj, args, kwargs) < 0)
         {
