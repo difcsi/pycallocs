@@ -105,6 +105,10 @@ static PyObject *char_to_long(PyObject* c)
             return PyLong_FromLong(ord);
         }
     }
+    else if (PyLong_Check(c)) {
+        Py_INCREF(c);
+        return c;
+    }
     else {
         PyErr_Format(PyExc_TypeError,
                      "expected string of length 1, but %.200s found",
