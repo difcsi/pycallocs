@@ -51,6 +51,8 @@ PyMODINIT_FUNC PyInit_allocs(void)
     ADD_TYPE(unsigned_int);
     ADD_TYPE(signed_char);
     ADD_TYPE(unsigned_char);
+    if ((char)-1 < 0) ADD_TYPE_WITH_NAME("char", signed_char);
+    else ADD_TYPE_WITH_NAME("char", unsigned_char);
     ADD_TYPE(long_int);
     ADD_TYPE(unsigned_long_int);
     ADD_TYPE(short_int);
