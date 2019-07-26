@@ -42,6 +42,7 @@ static ffi_type *ffi_type_for_uniqtype(const struct uniqtype *type)
         case ENUMERATION:
             // get the base type for the enumeration
             type = type->related[0].un.t.ptr;
+            if (!type) return NULL;
             // fall through
         case BASE:
         {
