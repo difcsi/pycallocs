@@ -192,6 +192,11 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
 static PyObject *addrproxy_str_repr(AddressProxyObject *self)
 {
     PyObject *str_repr = PyUnicode_FromStringAndSize(self->p_base.p_ptr, self->ap_length);
+    if (!str_repr)
+    {
+        PyErr_Clear();
+        return addrproxy_repr(self);
+    }
     PyObject *repr = PyUnicode_FromFormat("<'%U'>", str_repr);
     Py_DECREF(str_repr);
     return repr;
