@@ -1,0 +1,28 @@
+name: Build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Update apt-get
+        run: sudo apt-get update
+      - name: Install dependencies
+        run: sudo apt-get install -y build-essential libbsd-dev \
+              libelf-dev libdw-dev binutils-dev \
+              autoconf automake libtool pkg-config autoconf-archive \
+              g++ ocaml ocamlbuild ocaml-findlib \
+              default-jdk-headless python3 python \
+              make git gawk gdb wget \
+              libunwind-dev libc6-dev-i386 zlib1g-dev libc6-dbg \
+              libboost-iostreams-dev libboost-regex-dev \
+              libboost-serialization-dev libboost-filesystem-dev libffi6 libffi-dev
+      - name: Build contrib
+        run: make -C contrib
+      - name: Build 
+        run: make    
+  
