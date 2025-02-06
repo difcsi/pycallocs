@@ -12,7 +12,7 @@ install: build venv
 	. venv/bin/activate && python setup.py install
 
 venv:
-	$(PYTHON) -m venv venv
+	$(PYTHON) -m venv venv && . venv/bin/activate && pip install -r requirements.txt
 
 clean:
 	rm -rf venv build *.pyc

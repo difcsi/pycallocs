@@ -1,5 +1,4 @@
 #include "foreign_library.h"
-#include <libcrunch.h>
 
 typedef struct {
     PyTypeObject tp_base;
@@ -213,13 +212,13 @@ static void addrproxy_initlength(AddressProxyObject *self, ForeignTypeObject *ty
     {
         self->ap_length = 0;
         return;
-    }
+    } 
 
-    __libcrunch_bounds_t bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
+    Bounds bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
     // If ptr is not the base, it is a single element inside a larger array
-    if (__libcrunch_get_base(bounds, ptr) == ptr)
+    if (bounds.base == ptr)
     {
-        unsigned long byte_size = __libcrunch_get_size(bounds, ptr);
+        unsigned long byte_size = bounds.size;
         self->ap_length = byte_size / UNIQTYPE_SIZE_IN_BYTES(ptyp);
     }
     else self->ap_length = 1;

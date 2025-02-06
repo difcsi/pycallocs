@@ -4,6 +4,7 @@
 #include <Python.h>
 #include <liballocs.h>
 #include <stdbool.h>
+#include <minicrunch.h>
 
 // All the functions declared here do not NULL check or typecheck their arguments
 

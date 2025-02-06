@@ -9,4 +9,5 @@ venv
 *.cil.*
 **/__pycache__
 compile_commands.json
-
+dist
+Liballocs_FFI.egg*

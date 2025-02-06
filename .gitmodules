@@ -4,3 +4,7 @@
 [submodule "contrib/liballocs"]
 	path = contrib/liballocs
 	url = git@github.com:difcsi/liballocs.git
+	branch = master
+[submodule "contrib/librunt"]
+	path = contrib/librunt
+	url = https://github.com/difcsi/librunt.git

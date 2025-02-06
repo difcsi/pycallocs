@@ -1,5 +1,10 @@
 {
-    "ocaml.sandbox": {
-        "kind": "global"
+    "files.associations": {
+        "**/requirements{/**,*}.{txt,in}": "pip-requirements",
+        "foreign_library.h": "c",
+        "liballocs.h": "c",
+        "vas.h": "c",
+        "cstdlib": "c",
+        "allocmeta-defs.h": "c"
     }
 }
