@@ -1,10 +1,4 @@
-[submodule "contrib/libcrunch"]
-	path = contrib/libcrunch
-	url = git@github.com:difcsi/libcrunch.git
 [submodule "contrib/liballocs"]
 	path = contrib/liballocs
 	url = git@github.com:difcsi/liballocs.git
 	branch = master
-[submodule "contrib/librunt"]
-	path = contrib/librunt
-	url = https://github.com/difcsi/librunt.git
