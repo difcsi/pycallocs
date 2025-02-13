@@ -7,6 +7,19 @@
 		"dockerfile": "Dockerfile"
 		// Update 'VARIANT' to pick a different base image
 		// "args": { "VARIANT": "20.04" }
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-vscode.cpptools-extension-pack",
+				"mcu-debug.memory-view",
+				"ms-vscode.makefile-tools",
+				"ms-python.python",
+				"eamodio.gitlens",
+				"ms-azuretools.vscode-docker",
+				"ms-vscode.cmake-tools"
+			]
+		}
 	}
 
 	// Features to add to the dev container. More info: https://containers.dev/features.

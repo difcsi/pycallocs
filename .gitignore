@@ -11,3 +11,13 @@ venv
 compile_commands.json
 dist
 Liballocs_FFI.egg*
+
+
+#Autotools
+Makefile
+Makefile.in
+configure
+configure~
+aclocal.m4
+build-aux
+autom4te.cache

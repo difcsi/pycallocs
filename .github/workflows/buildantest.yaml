@@ -1,6 +1,10 @@
-name: Build
+name: Build, Test & Package
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
 
 jobs:
   build:
@@ -8,7 +12,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Update apt-get
         run: sudo apt-get update
       - name: Install dependencies
@@ -21,8 +27,13 @@ jobs:
             libunwind-dev libc6-dev-i386 zlib1g-dev libc6-dbg \
             libboost-iostreams-dev libboost-regex-dev \
             libboost-serialization-dev libboost-filesystem-dev libffi-dev
-      - name: Build contrib
-        run: make -C contrib
-      - name: Build 
-        run: make     
+        
+      - name: Test
+        run: make test
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
   
