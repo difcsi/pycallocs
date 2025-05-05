@@ -9,12 +9,13 @@ tests: install
 	$(MAKE) -C tests
 
 install: build venv
-	. venv/bin/activate && python setup.py install
+	. venv/bin/activate && pip install .
 
 venv:
 	$(PYTHON) -m venv venv && . venv/bin/activate && pip install -r requirements.txt
 
 clean:
-	rm -rf venv build *.pyc
+	rm -rf venv build *.pyc 
+	$(MAKE) -C tests clean
 
 .PHONY: all build clean install tests

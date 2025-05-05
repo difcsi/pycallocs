@@ -1,10 +1,16 @@
 {
     "files.associations": {
+        "**/*.html": "html",
+        "**/templates/*/*.html": "django-html",
+        "**/templates/*": "django-html",
         "**/requirements{/**,*}.{txt,in}": "pip-requirements",
-        "foreign_library.h": "c",
-        "liballocs.h": "c",
-        "vas.h": "c",
-        "cstdlib": "c",
-        "allocmeta-defs.h": "c"
+        "*.tcc": "cpp",
+        "deque": "cpp",
+        "list": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "vector": "cpp",
+        "cstdlib": "c"
     }
 }

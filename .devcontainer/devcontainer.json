@@ -4,9 +4,8 @@
 	"name": "Ubuntu",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	"build": {
-		"dockerfile": "Dockerfile"
-		// Update 'VARIANT' to pick a different base image
-		// "args": { "VARIANT": "20.04" }
+		"dockerfile": "Dockerfile",
+		"args": { "VARIANT": "20.04" }
 	},
 	"customizations": {
 		"vscode": {

@@ -1,4 +1,4 @@
-CC = $(LIBALLOCS)/tools/lang/c/bin/allocscc
+CC = ../../contrib/liballocs/tools/lang/c/bin/allocscc
 
 all: $(patsubst %.c,%.so,$(filter-out $(wildcard *.cil.*) $(wildcard *.allocstubs.*),$(wildcard *.c)))
 

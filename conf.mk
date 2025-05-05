@@ -1,0 +1,1 @@
+LIBALLOCS = $(realpath ./contrib/liballocs/)

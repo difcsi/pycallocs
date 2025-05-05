@@ -5,10 +5,12 @@
             "includePath": [
                 "${workspaceFolder}/include/**",
                 "${workspaceFolder}/contrib/**/include/**",
-                "/usr/include/python3.12",
+                "/usr/include/python3.13",
                 "${workspaceFolder}/contrib/liballocs/src"
             ],
-            "defines": [],
+            "defines": [
+                "USE_LIFETIME_POLICIES"
+            ],
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "c11",
             "cppStandard": "c++11",

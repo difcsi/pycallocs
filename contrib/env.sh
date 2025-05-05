@@ -1,0 +1,2 @@
+export LIBALLOCS=$(pwd)/liballocs
+
