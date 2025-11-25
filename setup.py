@@ -18,7 +18,8 @@ LIBRARY_PATHS = list(map(str, [
     ROOT / 'contrib/liballocs/lib'
 ]))
 compile_args = [
-    '-DLIFETIME_POLICIES'
+    '-DLIFETIME_POLICIES',
+    '-gdwarf-4'
 ]
 
 if DEBUG:

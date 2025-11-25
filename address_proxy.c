@@ -338,8 +338,8 @@ static void *addrproxy_getdataptr(PyObject *obj, ForeignTypeObject *type)
     // None -> NULL
     if (obj == Py_None)
     {
-        static void *nullptr = 0;
-        return &nullptr;
+        static void *np = 0;
+        return &np;
     }
 
     if (addrproxy_typecheck(obj, type)) return &((ProxyObject *) obj)->p_ptr;

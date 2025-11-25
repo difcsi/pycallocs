@@ -5,7 +5,7 @@
             "includePath": [
                 "${workspaceFolder}/include/**",
                 "${workspaceFolder}/contrib/**/include/**",
-                "/usr/include/python3.12",
+                "/usr/include/python3.13",
                 "${workspaceFolder}/contrib/liballocs/src"
             ],
             "defines": [],
