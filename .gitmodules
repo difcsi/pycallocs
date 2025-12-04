@@ -1,0 +1,4 @@
+[submodule "contrib/liballocs"]
+	path = contrib/liballocs
+	url = git@github.com:difcsi/liballocs.git
+	branch = lifetime-policies

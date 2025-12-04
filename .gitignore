@@ -11,3 +11,37 @@ venv
 compile_commands.json
 dist
 Liballocs_FFI.egg*
+
+
+
+
+# http://www.gnu.org/software/automake
+
+Makefile.in
+
+# http://www.gnu.org/software/autoconf
+
+.dirstamp
+/autom4te.cache
+/aclocal.m4
+/compile
+/configure
+/depcomp
+/install-sh
+/missing
+/stamp-h1
+/include/stamp-h2
+/m4/
+/config.guess
+/config.sub
+/config.status
+/config.log
+/ltmain.sh
+/libtool
+/config.mk
+/Makefile
+/config.h
+
+
+contrib/config.mk
+contrib/env.sh
