@@ -1,11 +1,13 @@
 name: Build
 
-on: [push, pull_request]
+on:
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
-
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -13,16 +15,13 @@ jobs:
         run: sudo apt-get update
       - name: Install dependencies
         run: DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y \
-            build-essential libbsd-dev libelf-dev libdw-dev binutils-dev \
-            autoconf automake libtool pkg-config autoconf-archive \
-            g++ ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev \
-            default-jdk-headless python3 \
-            make git gawk gdb wget \
-            libunwind-dev libc6-dev-i386 zlib1g-dev libc6-dbg \
-            libboost-iostreams-dev libboost-regex-dev \
-            libboost-serialization-dev libboost-filesystem-dev libffi-dev
+          $(cat .circleci/build-dependencies.txt)
       - name: Build contrib
-        run: make -C contrib
+        run: make -C contrib -j $(nproc)
       - name: Build 
-        run: make     
+        run: |
+          . ./contrib/env.sh
+          make -j $(nproc)
+      - name: Run tests
+        run: make test
   
