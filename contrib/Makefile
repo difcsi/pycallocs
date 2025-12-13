@@ -1,9 +1,58 @@
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
 CONTRIB := $(realpath $(dir $(THIS_MAKEFILE)))
-default: $(CONTRIB)/env.sh config.mk build-liballocs
+default: $(CONTRIB)/env.sh config.mk build-liballocs build-linkpy build-alaska build-cpython
 
 
 include config.mk
+
+
+
+# ---------------------------- alaska
+
+CONFIG_MK += \nALASKA := $(CONTRIB)/alaska\n
+varlist += ALASKA
+
+.PHONY: build-alaska-deps
+build-alaska-deps:
+	$(MAKE) -C alaska deps
+
+.PHONY: build-alaska
+build-alaska: build-alaska-deps
+	${MAKE} -C alaska
+
+AENV:= CC=$(CONTRIB)/alaska/local/bin/alaska CXX=$(CONTRIB)/alaska/local/bin/alaska++ LD_LIBRARY_PATH=${CONTRIB}/alaska/local/lib:${LD_LIBRARY_PATH} PATH=${CONTRIB}/alaska/local/bin:${PATH}
+#CC := ${CONTRIB}/alaska/local/bin/alaska
+#CXX := ${CONTRIB}/alaska/local/bin/alaska++
+LD_LIBRARY_PATH := ${CONTRIB}/alaska/local/lib:${LD_LIBRARY_PATH}
+#PATH := ${CONTRIB}/alaska/local/bin:${PATH}
+
+#CONFIG_MK += \nCC := ${CONTRIB}/alaska/local/bin/alaska\n
+#CONFIG_MK += \nCXX := ${CONTRIB}/alaska/local/bin/alaska++\n
+CONFIG_MK += \nLD_LIBRARY_PATH := ${CONTRIB}/alaska/local/lib:${LD_LIBRARY_PATH}\n
+#CONFIG_MK += \nPATH := ${CONTRIB}/alaska/local/bin:${PATH}\n
+CONFIG_MK += \nAENV := ${AENV}\n
+
+varlist+=AENV
+#varlist+=CC
+#varlist+=CXX
+varlist+=LD_LIBRARY_PATH
+#varlist+=PATH
+
+
+# ---------------------------- cpython
+CONFIG_MK += \nPYTHON := $(CONTRIB)/cpython/python\n
+PYTHON := $(CONTRIB)/cpython/python
+varlist += PYTHON
+
+cpython/Makefile:
+	cd cpython && ./configure --prefix=$(CONTRIB)/cpython/local
+
+.PHONY: build-cpython
+build-cpython: build-alaska cpython/Makefile
+	$(MAKE) -C cpython
+	$(PYTHON) -m ensurepip --upgrade
+	$(PYTHON) -m pip install setuptools
+
 
 
 
@@ -13,21 +62,25 @@ CONFIG_MK += \nLIBALLOCS := $(CONTRIB)/liballocs\n
 varlist += LIBALLOCS
 subconfigs += liballocs/contrib/config.mk
 
-
-.PHONY: build-liballocs-deps
-build-liballocs-deps:
+liballocs/contrib/config.mk:
 	$(MAKE) -C liballocs/contrib
 
-.PHONY: configure-liballocs
-configure-liballocs: build-liballocs-deps
+
+liballocs/configure: liballocs/contrib/config.mk
 	. liballocs/contrib/env.sh && \
 	cd liballocs && ./autogen.sh && ./configure --enable-lifetime-policies
 	
 .PHONY: build-liballocs
-build-liballocs: configure-liballocs
+build-liballocs: liballocs/configure
 	$(MAKE) -C liballocs
 
+# ---------------------------- linkpy
+CONFIG_MK += \nLINKPY := $(CONTRIB)/linkpy\n
+varlist += LINKPY
 
+.PHONY: build-linkpy
+build-linkpy: build-cpython
+	PYTHON=$(PYTHON) $(MAKE) -C linkpy
 
 # ----------------------------config.mk
 # If the user nukes a sub-config.mk that our config.mk depends on,
@@ -53,6 +106,9 @@ $(foreach cfg,$(subconfigs),$(dir $(CONTRIB)/$(cfg))env.sh): %/env.sh:
 clean-all: clean
 	$(MAKE) -C liballocs clean
 	$(MAKE) -C liballocs/contrib clean
+	$(MAKE) -C alaska clean
+	$(MAKE) -C cpython clean
+	$(MAKE) -C linkpy clean
 	rm -f config.mk env.sh
 .PHONY: clean
 clean:

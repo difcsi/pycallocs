@@ -16,8 +16,11 @@ LIBALLOCSTOOL := @liballocstool@
 
 # Compiler configuration
 ALLOCSCC := @allocscc@
+USE_ALLOCSCC := @use_allocscc@
+ifeq ($(USE_ALLOCSCC),yes)
 CC := $(ALLOCSCC)
 export CC
+endif
 
 # Lifetime policies (required for pycallocs)
 LIFETIME_POLICIES := @lifetime_policies@

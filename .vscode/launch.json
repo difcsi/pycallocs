@@ -1,0 +1,57 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "C/C++: Run test",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/usr/bin/env",
+            "args": [
+                "LD_PRELOAD=${workspaceFolder}/contrib/liballocs/lib/liballocs_preload.so",
+                "${workspaceFolder}/contrib/cpython/python",
+                "${file}"
+            ],
+            "cwd": "${fileDirname}",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Ignore SIGBUS signals",
+                    "text": "handle SIGBUS nostop noprint pass",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Ignore SIGILL signals",
+                    "text": "handle SIGILL nostop noprint pass",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Break on Python ImportError",
+                    "text": "break _PyErr_SetString",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Break on dlopen",
+                    "text": "break dlopen",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Break on _PyImport_LoadDynamicModuleWithSpec",
+                    "text": "break _PyImport_LoadDynamicModuleWithSpec",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

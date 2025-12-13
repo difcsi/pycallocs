@@ -6,6 +6,17 @@
 #include <stdbool.h>
 #include <minicrunch.h>
 
+// Workaround for CIL compatibility issues
+#ifndef nullptr
+#define nullptr NULL
+#endif
+#ifndef true
+#define true 1
+#endif
+#ifndef false
+#define false 0
+#endif
+
 // All the functions declared here do not NULL check or typecheck their arguments
 
 typedef struct {

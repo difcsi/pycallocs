@@ -2,3 +2,12 @@
 	path = contrib/liballocs
 	url = git@github.com:difcsi/liballocs.git
 	branch = lifetime-policies
+[submodule "contrib/alaska"]
+	path = contrib/alaska
+	url = git@github.com:difcsi/alaska.git
+[submodule "contrib/linkpy"]
+	path = contrib/linkpy
+	url = git@github.com:difcsi/linkpy.git
+[submodule "contrib/cpython"]
+	path = contrib/cpython
+	url = git@github.com:difcsi/cpython.git

@@ -14,9 +14,11 @@ PYTHON_SOURCES = \
 PYTHON_MODULES = elflib.py
 
 # Compiler and flags configuration
-# Use allocscc for compilation to generate uniqtype symbols
+# Use allocscc for compilation to generate uniqtype symbols (if enabled)
+if USE_ALLOCSCC
 CC = @allocscc@
 export CC
+endif
 
 # Include paths
 AM_CPPFLAGS = \
@@ -60,12 +62,12 @@ LIBS = -ldl -lffi -lallocs
 all-local: build-python
 
 build-python: $(PYTHON_SOURCES) $(PYTHON_MODULES)
-	@echo "Building Python extension module..."
-	$(PYTHON) setup.py build
+	@echo "Building and installing Python extension module..."
+	$(PYTHON) -m pip install -e . --no-build-isolation
 
 install-exec-local: build-python
 	@echo "Installing Python extension module..."
-	$(PYTHON) setup.py install --prefix=$(prefix)
+	$(PYTHON) -m pip install --prefix=$(prefix) .
 
 clean-local:
 	rm -rf build *.pyc __pycache__ *.egg-info

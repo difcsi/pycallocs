@@ -31,7 +31,7 @@ AC_ARG_VAR([PYTHON], [Python interpreter to use])
 AS_IF([test "x$PYTHON" = x], [PYTHON=python3])
 AC_MSG_CHECKING([for Python])
 AS_IF([$PYTHON --version >/dev/null 2>&1],
-      [AC_MSG_RESULT([$$PYTHON])],
+      [AC_MSG_RESULT([$PYTHON])],
       [AC_MSG_FAILURE([Python not found. Try setting PYTHON=/path/to/python3])])
 
 # Check for Python development headers
@@ -59,6 +59,12 @@ AC_ARG_ENABLE([debug],
 AS_IF([test "x$enable_debug" = "xyes"],
       [AC_DEFINE([DEBUG],1,[Debug mode enabled])])
 AM_CONDITIONAL(DEBUG, [test "x$enable_debug" = "xyes"])
+
+# Use allocscc compiler option
+AC_ARG_ENABLE([allocscc],
+              AS_HELP_STRING([--enable-allocscc], [Use allocscc compiler to generate uniqtype symbols (disabled by default)]),
+              [enable_allocscc=${enableval}], [enable_allocscc=no])
+AM_CONDITIONAL(USE_ALLOCSCC, [test "x$enable_allocscc" = "xyes"])
 
 # Find liballocs
 AC_ARG_WITH([liballocs],
@@ -90,12 +96,17 @@ AS_IF([test -f "$ac_liballocs/lib/liballocs.so"],
       [AC_MSG_RESULT([yes])],
       [AC_MSG_FAILURE([liballocs not built. Run: cd $ac_liballocs && make])])
 
-# Find allocscc
+# Find allocscc (only check if --enable-allocscc is used)
 allocscc="$ac_liballocs/tools/lang/c/bin/allocscc"
-AC_MSG_CHECKING([for allocscc])
-AS_IF([test -x "$allocscc"],
-      [AC_MSG_RESULT([yes])],
-      [AC_MSG_FAILURE([allocscc not found at $allocscc])])
+use_allocscc="no"
+AS_IF([test "x$enable_allocscc" = "xyes"],
+      [
+        AC_MSG_CHECKING([for allocscc])
+        AS_IF([test -x "$allocscc"],
+              [AC_MSG_RESULT([yes])
+               use_allocscc="yes"],
+              [AC_MSG_FAILURE([allocscc not found at $allocscc. Build liballocs first or use --disable-allocscc])])
+      ])
 
 # Get paths from liballocs
 librunt="$ac_liballocs/contrib/libsystrap/contrib/librunt"
@@ -104,6 +115,7 @@ liballocstool="$ac_liballocs/contrib/liballocstool"
 
 AC_SUBST([liballocs], [$ac_liballocs])
 AC_SUBST([allocscc], [$allocscc])
+AC_SUBST([use_allocscc], [$use_allocscc])
 AC_SUBST([librunt], [$librunt])
 AC_SUBST([libsystrap], [$libsystrap])
 AC_SUBST([liballocstool], [$liballocstool])

@@ -45,3 +45,4 @@ Makefile.in
 
 contrib/config.mk
 contrib/env.sh
+configure~
