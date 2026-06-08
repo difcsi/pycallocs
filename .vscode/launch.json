@@ -7,7 +7,7 @@
             "request": "launch",
             "program": "/usr/bin/env",
             "args": [
-                "LD_PRELOAD=${workspaceFolder}/contrib/liballocs/lib/liballocs_preload.so",
+                "LD_PRELOAD=${workspaceFolder}/contrib/stackscan/contrib/liballocs/lib/liballocs_preload.so",
                 "${workspaceFolder}/contrib/cpython/python",
                 "${file}"
             ],

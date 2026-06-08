@@ -1,42 +1,22 @@
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
 CONTRIB := $(realpath $(dir $(THIS_MAKEFILE)))
-default: $(CONTRIB)/env.sh config.mk build-liballocs build-linkpy build-alaska build-cpython
+default: $(CONTRIB)/env.sh config.mk build-linkpy build-cpython
 
 
 include config.mk
 
 
+# ---------------------------- stackscan-owned dependencies
+# liballocs and alaska are submodules of stackscan, not of pycallocs. They are
+# built within stackscan; here we only export their locations so that the test
+# Makefiles and setup.py can find the pre-built artifacts.
+STACKSCAN := $(CONTRIB)/stackscan
 
-# ---------------------------- alaska
+CONFIG_MK += \nLIBALLOCS := $(STACKSCAN)/contrib/liballocs\n
+varlist += LIBALLOCS
 
-CONFIG_MK += \nALASKA := $(CONTRIB)/alaska\n
+CONFIG_MK += \nALASKA := $(STACKSCAN)/contrib/alaska\n
 varlist += ALASKA
-
-.PHONY: build-alaska-deps
-build-alaska-deps:
-	$(MAKE) -C alaska deps
-
-.PHONY: build-alaska
-build-alaska: build-alaska-deps
-	${MAKE} -C alaska
-
-AENV:= CC=$(CONTRIB)/alaska/local/bin/alaska CXX=$(CONTRIB)/alaska/local/bin/alaska++ LD_LIBRARY_PATH=${CONTRIB}/alaska/local/lib:${LD_LIBRARY_PATH} PATH=${CONTRIB}/alaska/local/bin:${PATH}
-#CC := ${CONTRIB}/alaska/local/bin/alaska
-#CXX := ${CONTRIB}/alaska/local/bin/alaska++
-LD_LIBRARY_PATH := ${CONTRIB}/alaska/local/lib:${LD_LIBRARY_PATH}
-#PATH := ${CONTRIB}/alaska/local/bin:${PATH}
-
-#CONFIG_MK += \nCC := ${CONTRIB}/alaska/local/bin/alaska\n
-#CONFIG_MK += \nCXX := ${CONTRIB}/alaska/local/bin/alaska++\n
-CONFIG_MK += \nLD_LIBRARY_PATH := ${CONTRIB}/alaska/local/lib:${LD_LIBRARY_PATH}\n
-#CONFIG_MK += \nPATH := ${CONTRIB}/alaska/local/bin:${PATH}\n
-CONFIG_MK += \nAENV := ${AENV}\n
-
-varlist+=AENV
-#varlist+=CC
-#varlist+=CXX
-varlist+=LD_LIBRARY_PATH
-#varlist+=PATH
 
 
 # ---------------------------- cpython
@@ -45,34 +25,15 @@ PYTHON := $(CONTRIB)/cpython/python
 varlist += PYTHON
 
 cpython/Makefile:
-	cd cpython && ./configure --prefix=$(CONTRIB)/cpython/local
+	cd cpython && ./configure --prefix=$(CONTRIB)/cpython/local CFLAGS=-fPIC
+
 
 .PHONY: build-cpython
-build-cpython: build-alaska cpython/Makefile
+build-cpython: cpython/Makefile
 	$(MAKE) -C cpython
 	$(PYTHON) -m ensurepip --upgrade
 	$(PYTHON) -m pip install setuptools
 
-
-
-
-# ---------------------------- liballocs
- 
-CONFIG_MK += \nLIBALLOCS := $(CONTRIB)/liballocs\n
-varlist += LIBALLOCS
-subconfigs += liballocs/contrib/config.mk
-
-liballocs/contrib/config.mk:
-	$(MAKE) -C liballocs/contrib
-
-
-liballocs/configure: liballocs/contrib/config.mk
-	. liballocs/contrib/env.sh && \
-	cd liballocs && ./autogen.sh && ./configure --enable-lifetime-policies
-	
-.PHONY: build-liballocs
-build-liballocs: liballocs/configure
-	$(MAKE) -C liballocs
 
 # ---------------------------- linkpy
 CONFIG_MK += \nLINKPY := $(CONTRIB)/linkpy\n
@@ -80,7 +41,8 @@ varlist += LINKPY
 
 .PHONY: build-linkpy
 build-linkpy: build-cpython
-	PYTHON=$(PYTHON) $(MAKE) -C linkpy
+	cmake -S linkpy -B linkpy/build -DPYTHON=$(PYTHON)
+	cmake --build linkpy/build -j$(shell nproc)
 
 # ----------------------------config.mk
 # If the user nukes a sub-config.mk that our config.mk depends on,
@@ -104,11 +66,8 @@ $(foreach cfg,$(subconfigs),$(dir $(CONTRIB)/$(cfg))env.sh): %/env.sh:
 
 .PHONY: clean-all
 clean-all: clean
-	$(MAKE) -C liballocs clean
-	$(MAKE) -C liballocs/contrib clean
-	$(MAKE) -C alaska clean
 	$(MAKE) -C cpython clean
-	$(MAKE) -C linkpy clean
+	rm -rf linkpy/build linkpy/dist
 	rm -f config.mk env.sh
 .PHONY: clean
 clean:

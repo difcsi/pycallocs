@@ -20,8 +20,4 @@ struct bounds_cb_arg
 };
 
 
-static _Bool bounds_cb(struct uniqtype *u, struct uniqtype_containment_ctxt *ucc,
-	unsigned u_offset_from_search_start, void *arg_void);
-
-
 Bounds __fetch_bounds_internal(const void *obj, const void *derived, const struct uniqtype *t);

@@ -11,17 +11,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          submodules: recursive
       - name: Update apt-get
         run: sudo apt-get update
       - name: Install dependencies
-        run: DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y \
-          $(cat .circleci/build-dependencies.txt)
-      - name: Build contrib
+        run: sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y \
+          $(cat .github/workflows/build-dependencies.txt)
+      # liballocs and alaska are submodules of stackscan and must be built there
+      # first; pycallocs consumes them as pre-built dependencies.
+      - name: Build contrib (cpython, linkpy)
         run: make -C contrib -j $(nproc)
-      - name: Build 
-        run: |
-          . ./contrib/env.sh
-          make -j $(nproc)
+      - name: Configure (CMake)
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build -j $(nproc)
       - name: Run tests
-        run: make test
-  
+        run: ctest --test-dir build --output-on-failure
+
