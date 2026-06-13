@@ -385,16 +385,17 @@ static void closureproxy_call(ffi_cif *cif, void *ret, void **args, ClosureProxy
     ForeignTypeObject *ret_type = fun_type->ff_rettype;
     if (ret_obj)
     {
-        ret_type->ft_storeinto(ret_obj, ret, ret_type);
+        if (ret_type->ft_storeinto(ret_obj, ret, ret_type) < 0)
+            PyErr_WriteUnraisable(closure->fc_callable);
         Py_DECREF(ret_obj);
     }
     else
     {
-        // The callable raised: there is no Python caller to propagate to
-        // across the foreign call boundary, so report it and leave the
-        // return slot untouched rather than dereferencing NULL.
+        // The callable raised: report it and leave the return slot untouched
+        // rather than dereferencing NULL.
         PyErr_WriteUnraisable(closure->fc_callable);
     }
+    // Never let a Python exception leak back across the foreign call boundary.
 }
 
 static PyObject *closureproxy_ctor(PyObject *args, PyObject *kwds, ForeignTypeObject *ftype)
