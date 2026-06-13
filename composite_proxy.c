@@ -106,8 +106,16 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
             for (unsigned i = 0 ; type->tp_getset[i].name ; ++i)
             {
                 PyObject *field = PyObject_GetAttrString(arg, type->tp_getset[i].name);
-                if (!field || compositeproxy_setfield(self, field,
-                            type->tp_getset[i].closure) < 0)
+                if (!field)
+                {
+                    PyErr_Clear();
+                    objinit_success = false;
+                    break;
+                }
+                int storeret = compositeproxy_setfield(self, field,
+                        type->tp_getset[i].closure);
+                Py_DECREF(field);
+                if (storeret < 0)
                 {
                     PyErr_Clear();
                     objinit_success = false;

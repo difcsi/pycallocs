@@ -169,21 +169,38 @@ static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kw
 
 static PyObject *addrproxy_repr(AddressProxyObject *self)
 {
-    PyObject *repr_acc = PyUnicode_New(0, 0);
-    for (int i = 0; i < self->ap_length; ++i)
+    // Collect the repr of each element then join them in a single pass.
+    // Accumulating into a growing string instead would be quadratic since
+    // each concatenation copies the whole prefix built so far.
+    PyObject *item_reprs = PyList_New(self->ap_length);
+    if (!item_reprs) return NULL;
+
+    for (Py_ssize_t i = 0; i < self->ap_length; ++i)
     {
         PyObject *item_obj = addrproxy_item(self, i);
+        if (!item_obj)
+        {
+            Py_DECREF(item_reprs);
+            return NULL;
+        }
         PyObject *item_repr = PyObject_Repr(item_obj);
         Py_DECREF(item_obj);
-        const char* fmt = i == 0 ? "%U%U" : "%U, %U";
-        PyObject *next_repr_acc = PyUnicode_FromFormat(fmt, repr_acc, item_repr);
-        Py_DECREF(repr_acc);
-        Py_DECREF(item_repr);
-        repr_acc = next_repr_acc;
+        if (!item_repr)
+        {
+            Py_DECREF(item_reprs);
+            return NULL;
+        }
+        PyList_SET_ITEM(item_reprs, i, item_repr); // steals reference
     }
 
-    PyObject *repr = PyUnicode_FromFormat("<[%U]>", repr_acc);
-    Py_DECREF(repr_acc);
+    PyObject *sep = PyUnicode_FromString(", ");
+    PyObject *items_str = PyUnicode_Join(sep, item_reprs);
+    Py_DECREF(sep);
+    Py_DECREF(item_reprs);
+    if (!items_str) return NULL;
+
+    PyObject *repr = PyUnicode_FromFormat("<[%U]>", items_str);
+    Py_DECREF(items_str);
     return repr;
 }
 
