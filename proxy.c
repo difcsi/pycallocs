@@ -279,13 +279,17 @@ int Proxy_ClearRef(PyObject *object, void *arg)
 
 int Proxy_TraverseRef(void *data, visitproc visit, void *arg, ForeignTypeObject* type)
 {
-    // Find the base proxy referenced by the data pointer, if any
-    PyObject *key = PyLong_FromVoidPtr(data);
+    // The clear case looks the reference up by address and does not need a
+    // dict key, so handle it before allocating one.
     if (visit == Proxy_ClearRef)
     {
         proxy_delref(NULL, (const void **) data);
         return 0;
     }
+
+    // Find the base proxy referenced by the data pointer, if any
+    PyObject *key = PyLong_FromVoidPtr(data);
+    if (!key) return -1;
     PyObject *target_base_proxy = PyDict_GetItem(proxy_pointing_addr_dict, key);
     Py_DECREF(key);
     Py_VISIT(target_base_proxy);
