@@ -1,6 +1,7 @@
 import importlib
 import importlib.abc
 import importlib.machinery
+import os
 import sys
 # Re-export everything from the C extension module
 from allocs import *
@@ -31,7 +32,11 @@ class LibraryFinder(importlib.abc.MetaPathFinder):
 
         for base_path in path:
             try:
-                filename = base_path + name + lib_extension
+                # os.path.join tolerates base paths with or without a trailing
+                # separator. The blank "" entry is preserved verbatim (join("",
+                # x) == x), keeping its special meaning of letting dlopen use its
+                # own search paths for a bare filename.
+                filename = os.path.join(base_path, name + lib_extension)
                 loader = LibraryLoader(filename)
                 return importlib.machinery.ModuleSpec(fullname, loader, origin=filename)
             except ImportError:
