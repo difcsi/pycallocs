@@ -84,7 +84,6 @@ cleanly.
 ### Link state: FULLY GREEN
 The extension compiles and **all symbols resolve**:
 - base-type uniqtypes ← basetypes provider
-- `__fetch_bounds_internal` ← minicrunch
 - `__liballocs_{attach,detach}_lifetime_policy`, `__liballocs_register_gc_policy`
   ← rebuilt liballocs preload
 - `aborted_unknown_storage`, `err_object_of_unknown_storage` ← dummyweaks

@@ -26,4 +26,7 @@ def add_libs(*names):
     for name in names:
         path = os.path.join(_LIBS, name)
         if path not in elflib.__path__:
+            # Order within __path__ does not matter: elflib's finder always tries the
+            # bare-name "" (system search) fallback last, so this explicit fixture
+            # directory is searched before it regardless of position.
             elflib.__path__.append(path)

@@ -6,6 +6,39 @@
  * here the same way address_proxy.c forward-declares __notify_ptr_write. */
 void __notify_copy(void *dest, const void *src, unsigned long n);
 
+// Alaska only: after a raw memcpy duplicates a struct, every handle-valued pointer
+// field in the copy references its pointee without the reference the Alaska compiler
+// would have recorded for an instrumented store (the memcpy is in pycallocs' own,
+// un-instrumented C). Walk the struct's uniqtype and take a reference for each copied
+// pointer, mirroring liballocs' notify_copy_for_type walk (lifetime_policies.c) but
+// with an Alaska refcount instead of the lifetime-policy barrier. ss_inc_refcount is
+// a no-op on NULL/non-handle fields. `region` is the raw (translated) base of the
+// copy; the destination was freshly zero-initialised, so only increments are needed.
+static void alaska_refcount_copied_ptrs(void *region, struct uniqtype *type)
+{
+    if (UNIQTYPE_IS_POINTER_TYPE(type))
+    {
+        ss_inc_refcount(*(void **) region);
+    }
+    else if (UNIQTYPE_IS_ARRAY_TYPE(type))
+    {
+        struct uniqtype *elemtyp = UNIQTYPE_ARRAY_ELEMENT_TYPE(type);
+        if (!elemtyp) return;
+        unsigned long elemsize = UNIQTYPE_SIZE_IN_BYTES(elemtyp);
+        unsigned nelems = UNIQTYPE_ARRAY_LENGTH(type);
+        for (unsigned i = 0; i < nelems; ++i)
+            alaska_refcount_copied_ptrs((char *) region + i * elemsize, elemtyp);
+    }
+    else if (UNIQTYPE_IS_COMPOSITE_TYPE(type))
+    {
+        unsigned nmemb = UNIQTYPE_COMPOSITE_MEMBER_COUNT(type);
+        for (unsigned i = 0; i < nmemb; ++i)
+            alaska_refcount_copied_ptrs(
+                (char *) region + type->related[i].un.memb.off,
+                type->related[i].un.memb.ptr);
+    }
+}
+
 struct field_info {
     ForeignTypeObject *type;
     size_t offset;
@@ -51,14 +84,17 @@ static PyObject *compositeproxy_getinvalidfield(PyObject *self, void *cb)
 
 static PyObject *compositeproxy_getfield(ProxyObject *self, struct field_info *field_info)
 {
-    void *field = self->p_ptr + field_info->offset;
+    // Re-derive the raw backing from the handle at each access (never cache it):
+    // under Alaska the GC may have relocated the backing since last time. No-op
+    // (identity) when p_ptr is already a raw pointer / Alaska is off.
+    void *field = ss_translate(self->p_ptr) + field_info->offset;
     ForeignTypeObject *ftype = field_info->type;
     return ftype->ft_getfrom(field, ftype);
 }
 
 static int compositeproxy_setfield(ProxyObject *self, PyObject *value, struct field_info *field_info)
 {
-    void *field = self->p_ptr + field_info->offset;
+    void *field = ss_translate(self->p_ptr) + field_info->offset;
     ForeignTypeObject *ftype = field_info->type;
     return ftype->ft_storeinto(value, field, ftype);
 }
@@ -74,7 +110,7 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
     // Default initialization => zero initialize the whole structure
     if (nargs == 0 && nkwargs == 0)
     {
-        memset(self->p_ptr, 0, type->tp_itemsize);
+        memset(ss_translate(self->p_ptr), 0, type->tp_itemsize);
         return 0;
     }
 
@@ -93,14 +129,27 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
                 return -1;
             }
 
-            memcpy(self->p_ptr, other->p_ptr, type->tp_itemsize);
+            void *dest_raw = ss_translate(self->p_ptr);
+            void *src_raw = ss_translate(other->p_ptr);
+            memcpy(dest_raw, src_raw, type->tp_itemsize);
             // The raw memcpy duplicated any pointer fields without running the
-            // per-pointer write barriers, so the GC/lifetime policy doesn't yet
-            // know this copy references those pointees. Notify liballocs so it
-            // re-establishes a reference for each copied pointer; otherwise
+            // per-pointer write barriers, so nothing yet records that this copy
+            // references those pointees. Without re-establishing a reference,
             // dropping the source (e.g. `del bt`) frees objects this copy still
-            // points at -> dangling pointer -> crash (struct_copy_lifetime).
-            __notify_copy(self->p_ptr, other->p_ptr, type->tp_itemsize);
+            // points at -> dangling pointer -> crash (struct_copy_lifetime). The dest
+            // was freshly zero-initialised, so only new references need recording.
+            // Handle fields and raw fields are disjoint and handled separately:
+            if (ss_libalaska_is_present())
+            {
+                // Take an Alaska refcount for each copied handle field (no-op on raw
+                // fields). __notify_copy can't: it looks pointees up by the stored
+                // handle, which never resolves.
+                struct uniqtype *t = ss_alloc_get_type(self->p_ptr);
+                if (t) alaska_refcount_copied_ptrs(dest_raw, t);
+            }
+            // Re-establish a lifetime-policy reference for each copied raw pointer
+            // (no-op on handle fields, which sit above MAXIMUM_USER_ADDRESS).
+            __notify_copy(dest_raw, src_raw, type->tp_itemsize);
             return 0;
         }
 
@@ -168,7 +217,7 @@ static int compositeproxy_init(ProxyObject *self, PyObject *args, PyObject *kwar
             {
                 // No initialization data for the field => zero initialization
                 struct field_info *field_info = type->tp_getset[i].closure;
-                void *field = self->p_ptr + field_info->offset;
+                void *field = ss_translate(self->p_ptr) + field_info->offset;
                 memset(field, 0, UNIQTYPE_SIZE_IN_BYTES(field_info->type->ft_type));
             }
         }
@@ -194,10 +243,10 @@ static PyObject *compositeproxy_ctor(PyObject *args, PyObject *kwds, ForeignType
     ProxyObject *obj = PyObject_GC_New(ProxyObject, type->ft_proxy_type);
     if (obj)
     {
-        obj->p_ptr = malloc(type->ft_proxy_type->tp_itemsize);
-        __liballocs_set_alloc_type(obj->p_ptr, type->ft_type);
-        Proxy_Register(obj);
-        __liballocs_detach_manual_dealloc_policy(obj->p_ptr);
+        obj->p_ptr = totally_malloc(type->ft_proxy_type->tp_itemsize);
+        __liballocs_set_alloc_type(ss_translate(obj->p_ptr), type->ft_type);
+        Proxy_Register_To_Dict(obj);
+        totally_free(obj->p_ptr);  // remains kept alive by proxy object
         // Note that because the Python GC policy has been attached obj->p_ptr
         // is never freed at this point
         if (compositeproxy_init(obj, args, kwds) < 0)
@@ -222,7 +271,13 @@ static PyObject *compositeproxy_repr(ProxyObject *self)
     for (int i = 0 ; type->tp_getset[i].name ; ++i)
     {
         // Skip unrecognized types. TODO: Maybe show them...
-        if (type->tp_getset[i].get != (getter) compositeproxy_getfield) continue;
+        if (type->tp_getset[i].get != (getter) compositeproxy_getfield) {
+            #ifdef PYC_DEBUG
+            fprintf(stderr, "Skipping unrecognized field %s in composite proxy %s\n",
+                type->tp_getset[i].name, type->tp_name);
+            #endif
+            continue;
+        };
 
         PyObject *field_obj = compositeproxy_getfield(self, type->tp_getset[i].closure);
         PyObject *field_val_repr = PyObject_Repr(field_obj);

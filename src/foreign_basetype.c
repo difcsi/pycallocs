@@ -213,6 +213,18 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
 
     switch (type->un.base.enc)
     {
+        case 0:
+            // No DW_ATE encoding: liballocs' synthetic byte types, notably
+            // __uninterpreted_byte -- the element type it gives to heap
+            // allocations whose element type cannot be inferred from the
+            // allocation site (a plain malloc(n) with no sizeof). Treat a
+            // 1-byte uninterpreted base like unsigned char so such buffers
+            // still get working length/indexing (reads yield bytes of len 1).
+            CHECK_SIZE(1, char8_getfrom, uchar8_storeinto)
+
+            PyErr_SetString(PyExc_TypeError, "Unsupported foreign uninterpreted parameter");
+            break;
+
         case DW_ATE_boolean:
             obj->ft_getfrom = bool_getfrom;
             obj->ft_copyfrom = bool_getfrom;
@@ -284,6 +296,54 @@ ForeignTypeObject *ForeignBaseType_New(const struct uniqtype *type)
     {
         PyErr_SetString(PyExc_TypeError, "Unsupported foreign bit field parameter");
     }
+
+    if (PyErr_Occurred())
+    {
+        Py_DECREF(obj);
+        return NULL;
+    }
+    // `elflib.int()` / `elflib.int(5)`: a fresh zero- (or value-) initialised
+    // one-element cell, passable wherever C expects a pointer to this type --
+    // the C out-parameter idiom. Read the result back with cell[0].
+    obj->ft_constructor = ForeignType_CellCtorZero;
+    return obj;
+}
+
+// Enumerations are exposed as their underlying integer. liballocs metadata may
+// carry the underlying base type in related[0]; when present we reuse its exact
+// integer (de)serialisation (honouring its size and signedness). Otherwise --
+// the common case, since liballocstool currently emits enums with a NULL base
+// type -- we fall back to a signed integer sized to the enum (C enum constants
+// have type int, and signed is the safe default so negative values round-trip).
+ForeignTypeObject *ForeignEnumType_New(const struct uniqtype *type)
+{
+    const struct uniqtype *base = UNIQTYPE_ENUM_BASE_TYPE(type);
+    if (base && UNIQTYPE_IS_BASE_TYPE(base))
+    {
+        // Reuse the base type's handlers, but report the enum as ft_type so
+        // names/reprs reflect the enum rather than its underlying integer.
+        // (The int getfrom/storeinto functions are size-specialised and do not
+        // read ft_type, so re-pointing it is safe.)
+        ForeignTypeObject *obj = ForeignBaseType_New(base);
+        if (obj) obj->ft_type = type;
+        return obj;
+    }
+
+    ForeignTypeObject *obj = PyObject_New(ForeignTypeObject, &ForeignType_Type);
+    obj->ft_type = type;
+    obj->ft_proxy_type = NULL;
+    obj->ft_constructor = NULL;
+    obj->ft_getdataptr = NULL;
+    obj->ft_traverse = NULL;
+
+    unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
+    do {
+        CHECK_SIZE(1, int8_getfrom, int8_storeinto)
+        CHECK_SIZE(2, int16_getfrom, int16_storeinto)
+        CHECK_SIZE(4, int32_getfrom, int32_storeinto)
+        CHECK_SIZE(8, int64_getfrom, int64_storeinto)
+        PyErr_SetString(PyExc_TypeError, "Unsupported foreign enumeration size");
+    } while (0);
 
     if (PyErr_Occurred())
     {

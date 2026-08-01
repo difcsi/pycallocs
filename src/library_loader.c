@@ -52,6 +52,7 @@ struct add_sym_ctxt
 {
     PyObject *module;
     LibraryLoaderObject *loader;
+    PyObject *unsupported; // dict: export name -> reason it didn't materialize
 };
 
 static int add_type_to_module(const struct uniqtype *type, struct add_sym_ctxt* ctxt)
@@ -104,7 +105,11 @@ static void recursively_add_useful_types(const struct uniqtype *type, struct add
                 }
             }
             return;
-        case ENUMERATION: // TODO: handle enums properly
+        case ENUMERATION:
+            // Expose the enum itself (handled as its underlying integer). If the
+            // metadata records an underlying base type, surface that too.
+            if (add_type_to_module(type, ctxt) == 0)
+                recursively_add_useful_types(UNIQTYPE_ENUM_BASE_TYPE(type), ctxt);
             return;
         case ARRAY:
         case SUBRANGE:
@@ -127,14 +132,42 @@ static void recursively_add_useful_types(const struct uniqtype *type, struct add
     }
 }
 
+// Record an export we could not materialize into
+// module.__pycallocs_unsupported__ (a dict symbol -> reason string), so a
+// whole-library import stays introspectable: `dir(mod)` is what worked,
+// the dict is what didn't and why. Consumes/clears any pending exception
+// (its text becomes part of the reason).
+static void record_unsupported(struct add_sym_ctxt *ctxt, const char *symname,
+        const char *stage)
+{
+    PyObject *reason;
+    PyObject *exc = PyErr_GetRaisedException();
+    if (exc)
+    {
+        PyObject *exc_str = PyObject_Str(exc);
+        reason = PyUnicode_FromFormat("%s: %S", stage, exc_str);
+        Py_XDECREF(exc_str);
+        Py_DECREF(exc);
+    }
+    else reason = PyUnicode_FromString(stage);
+    if (!reason) { PyErr_Clear(); return; }
+    if (ctxt->unsupported)
+        PyDict_SetItemString(ctxt->unsupported, symname, reason);
+    Py_DECREF(reason);
+    PyErr_Clear();
+}
+
 static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
         char *strtab, void *arg)
 {
     struct add_sym_ctxt *ctxt = arg;
 
+    // Weak defined symbols are part of a library's API surface too (many
+    // libraries export API under STB_WEAK), so accept both bindings.
     if ((ELF64_ST_TYPE(sym->st_info) == STT_FUNC
         || ELF64_ST_TYPE(sym->st_info) == STT_OBJECT)
-        && ELF64_ST_BIND(sym->st_info) == STB_GLOBAL
+        && (ELF64_ST_BIND(sym->st_info) == STB_GLOBAL
+            || ELF64_ST_BIND(sym->st_info) == STB_WEAK)
         && sym->st_shndx != SHN_UNDEF
         && sym->st_shndx != SHN_ABS)
     {
@@ -144,14 +177,18 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
 
         void *data = (void *)(loadAddress + sym->st_value);
 
-        const struct uniqtype *type = __liballocs_get_alloc_type(data);
-        if (!type) return 0;
+        const struct uniqtype *type = ss_alloc_get_type(data);
+        if (!type)
+        {
+            record_unsupported(ctxt, symname, "no liballocs type at symbol");
+            return 0;
+        }
         recursively_add_useful_types(type, ctxt);
 
         ForeignTypeObject *ftype = ForeignType_GetOrCreate(type);
         if (!ftype)
         {
-            PyErr_Clear();
+            record_unsupported(ctxt, symname, "no ForeignType for symbol's uniqtype");
             return 0;
         }
 
@@ -159,7 +196,7 @@ static int add_sym_to_module(const ElfW(Sym) *sym, ElfW(Addr) loadAddress,
         Py_DECREF(ftype);
         if (!obj)
         {
-            PyErr_Clear();
+            record_unsupported(ctxt, symname, "proxy creation failed");
             return 0;
         }
 
@@ -202,9 +239,14 @@ static PyObject *libloader_exec(LibraryLoaderObject *self, PyObject *module)
     struct add_sym_ctxt ctxt;
     ctxt.module = module;
     ctxt.loader = self;
+    ctxt.unsupported = PyDict_New();
 
     dl_iterate_syms(self->dl_handle, add_sym_to_module, &ctxt);
     add_base_types_to_module(&ctxt);
+    // Full-library introspection: which exports did NOT materialize, and why.
+    // Empty dict == every accepted export imported cleanly.
+    if (ctxt.unsupported)
+        PyModule_AddObject(module, "__pycallocs_unsupported__", ctxt.unsupported);
     Py_RETURN_NONE;
 }
 

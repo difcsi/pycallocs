@@ -359,7 +359,7 @@ int Specialise_Convert(PyObject *obj, ForeignTypeObject *pointee, PyObject **out
     if (tr->to_c(obj, buf) < 0) return -1; // translator set a Python exception
 
     // Wrap the filled buffer as a registered proxy (malloc + set_alloc_type +
-    // memcpy + Proxy_Register). Supported types are scalar-only, so the plain
+    // memcpy + Proxy_Register_To_Dict). Supported types are scalar-only, so the plain
     // memcpy in Proxy_CopyFrom is a correct deep copy.
     *out = Proxy_CopyFrom(buf, pointee);
     return *out ? 0 : -1;

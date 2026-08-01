@@ -20,9 +20,36 @@ static PyObject *allocs_proxy_from_address(PyObject *self, PyObject *arg)
     return proxy;
 }
 
+// Debug/verification introspection: expose a proxy's underlying pointer (an
+// Alaska handle when the pointee is handle-backed) plus, when the Alaska
+// refcount runtime is present, whether it is a handle and its current handle
+// refcount. Used by the case-study verification drivers to give mechanical
+// evidence for lifetime claims; returns (ptr, is_handle, refcount|None).
+static PyObject *allocs_debug_handle_info(PyObject *self, PyObject *arg)
+{
+    if (!PyObject_TypeCheck(arg, &Proxy_Type))
+    {
+        PyErr_SetString(PyExc_TypeError, "expected a pycallocs proxy");
+        return NULL;
+    }
+    ProxyObject *proxy = (ProxyObject *) arg;
+    extern unsigned long alaska_get_refcount(void *) __attribute__((weak));
+    int is_handle = ss_is_handle(proxy->p_ptr);
+    PyObject *rc = Py_None;
+    if (is_handle && &alaska_get_refcount)
+        rc = PyLong_FromUnsignedLong(alaska_get_refcount(proxy->p_ptr));
+    else
+        Py_INCREF(Py_None);
+    PyObject *ret = Py_BuildValue("(NiN)",
+            PyLong_FromVoidPtr(proxy->p_ptr), is_handle, rc);
+    return ret;
+}
+
 static PyMethodDef allocs_methods[] = {
     {"proxy_from_address", allocs_proxy_from_address, METH_O,
      "Wrap a raw C address (int) in a pycallocs proxy for the pointee."},
+    {"debug_handle_info", allocs_debug_handle_info, METH_O,
+     "(ptr, is_handle, refcount|None) for a proxy -- verification aid."},
     {NULL, NULL, 0, NULL}
 };
 

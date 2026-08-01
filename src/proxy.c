@@ -27,10 +27,12 @@ void Proxy_EndDeferFrees(void)
     }
 }
 
-// Returns a borrowed reference
-static ProxyObject *proxy_for_addr(const void *addr)
+
+// Get's the Proxjy object for a given addresslike.
+// Returns NULL if no proxy is registered for that addresslike.
+static ProxyObject *lookup_proxydict(const void *addrlike)
 {
-    PyObject *key = PyLong_FromVoidPtr((void *) addr);
+    PyObject *key = PyLong_FromVoidPtr((void *) addrlike);
     PyObject *proxy_ptr = PyDict_GetItem(proxy_dict, key);
     Py_DECREF(key);
     if (!proxy_ptr) return NULL;
@@ -47,10 +49,19 @@ void Proxy_AddRefTo(ProxyObject *target_proxy, const void **from)
     Py_DECREF(from_key);
 }
 
+// increase the reference count of a proxy if a pointer to it's pointee is stored somewhere
+// FIXME: this is horrendous and not needed under the following assumptions:
+// 1. The allocscc compiles the foreign code with alaska
+// 2. Target is a handle
+
+// These callbacks only ever see raw (non-handle) objects: Python's interest in
+// a handle-backed object is an Alaska handle refcount (Proxy_Register_To_Dict),
+// not a liballocs lifetime policy, so liballocs never tracks handle writes here.
 static void proxy_addref(const void *target, const void **from)
 {
-    ProxyObject *target_proxy = proxy_for_addr(target);
-    // We should only be called if a proxy is registered for target
+    ProxyObject *target_proxy = lookup_proxydict(target);
+    // We should only be called if a proxy is registered for target.
+    // liballocs' GC callbacks operate in raw (translated) address space,
     assert(target_proxy);
     assert(target_proxy->p_ptr == target);
 
@@ -109,8 +120,11 @@ void Proxy_InitGCPolicy()
     proxy_gc_policy_id = __liballocs_register_gc_policy(proxy_addref, proxy_delref);
 }
 
-void Proxy_Register(ProxyObject *proxy)
+// Registers a proxy into the proxy dict to keep it alive.
+void Proxy_Register_To_Dict(ProxyObject *proxy)
 {
+    // Keyed by base handle when p_ptr is an Alaska handle (relocation-stable), raw
+    // base otherwise (
     PyObject *proxy_key = PyLong_FromVoidPtr(proxy->p_ptr);
     assert(!PyDict_Contains(proxy_dict, proxy_key));
 
@@ -121,16 +135,25 @@ void Proxy_Register(ProxyObject *proxy)
     Py_DECREF(proxy_ptr);
     Py_DECREF(proxy_key);
 
-    // Attach lifetime policy to the object to extend its lifetime
-    __liballocs_attach_lifetime_policy(proxy_gc_policy_id, proxy->p_ptr);
-
+    // Python's interest in the pointee. A handle-backed object (from
+    // Alaska-transformed code) gets one handle refcount owned by the live
+    // proxy -- Alaska's own barrier cannot count this store, because the
+    // extension is never compiled with the Alaska transform. A raw object
+    // (e.g. malloc'd by pycallocs itself, or any object when running without
+    // Alaska) falls back to the liballocs lifetime policy. ss_is_handle() and
+    // ss_inc_refcount() compile to no-ops without SS_HAVE_ALASKA, so only the
+    // policy branch exists there.
+    if (ss_is_handle(proxy->p_ptr))
+        ss_inc_refcount(proxy->p_ptr);
+    else
+        __liballocs_attach_lifetime_policy(proxy_gc_policy_id, ss_translate(proxy->p_ptr));
     // Start tracking the object with the cycle GC
     if (PyType_IS_GC(Py_TYPE(proxy))) PyObject_GC_Track(proxy);
 }
 
 // Does nothing if obj has not been registered before
 // Call free on the underlying foreign object if we are the last lifetime policy
-void Proxy_Unregister(ProxyObject *proxy)
+void Proxy_Unregister_From_Dict(ProxyObject *proxy)
 {
     PyObject *proxy_key = PyLong_FromVoidPtr(proxy->p_ptr);
     PyObject *proxy_ptr = PyDict_GetItem(proxy_dict, proxy_key);
@@ -138,9 +161,12 @@ void Proxy_Unregister(ProxyObject *proxy)
     {
         // Stop tracking the object with the cycle GC
         if (PyType_IS_GC(Py_TYPE(proxy))) PyObject_GC_UnTrack(proxy);
-
-        // This calls free on the foreign object if necessary
-        __liballocs_detach_lifetime_policy(proxy_gc_policy_id, proxy->p_ptr);
+        // Mirror of Proxy_Register_To_Dict: drop the handle reference we took
+        // there, or detach the liballocs lifetime policy for raw objects.
+        if (ss_is_handle(proxy->p_ptr))
+            ss_dec_refcount(proxy->p_ptr);
+        else
+            __liballocs_detach_lifetime_policy(proxy_gc_policy_id, ss_translate(proxy->p_ptr));
         PyDict_DelItem(proxy_dict, proxy_key);
     }
     Py_DECREF(proxy_key);
@@ -171,29 +197,92 @@ void Proxy_RetainStoredPtr(const void **dest, PyObject *valobj, const void *val)
     Py_DECREF(dest_key);
     if (already_tracked) return; // liballocs' GC policy is already managing this slot
 
-    if (proxy_for_addr(val) == proxy) Proxy_AddRefTo(proxy, dest);
+    // Look up by the dict's key convention: base handle under Alaska, raw base
+    // otherwise. `val` is the proxy's p_ptr (a handle, or a raw non-handle pointer
+    // such as a closure trampoline -- for which the key is the pointer itself).
+    if (lookup_proxydict((void *) val) == proxy) Proxy_AddRefTo(proxy, dest);
 }
 
+// Under Alaska, a foreign object adopted by pycallocs (e.g. a struct returned from a
+// a C library) may already hold pointers to objects pycallocs proxies
+// The barrier that would record those edges -- __notify_copy in the copy's
+// own (fixture) code -- may be a silent no-op under Alaska, when liballocs cannot type
+// a fixture-allocated chunk FIXME: But why?
+
+//  __notify_copy bails with "no type information". The result is a use-after-free: when the original is cleared,
+// the only references to the shared children go with it.
+
+// Re-establish those references from a type the *caller* supplies (the address proxy's
+// static pointee type, since liballocs itself can't type the chunk), walking it like
+// notify_copy_for_type. `region` is the raw (translated) base. Idempotent: handle
+// fields just take an Alaska refcount; raw fields skip slots already tracked, so a
+// reference __notify_copy did manage to record is never doubled.
+void Proxy_AdoptPtrFields(void *region, struct uniqtype *t)
+{
+    if (UNIQTYPE_IS_POINTER_TYPE(t))
+    {
+        const void **slot = (const void **) region;
+        void *val = (void *) *slot;
+        if (!val) return;
+        // FIXME: What?
+        // Handle pointees are kept alive by Alaska's own refcount;
+        // We only need to recover the edges liballocs' lifetime policy would have tracked for raw pointees.
+        if (ss_is_handle(val)) return;
+        PyObject *k = PyLong_FromVoidPtr((void *) slot);
+        int tracked = PyDict_Contains(proxy_pointing_addr_dict, k);
+        Py_DECREF(k);
+        if (tracked) return;
+        // Only keep registered base proxies alive (mirrors Proxy_RetainStoredPtr).
+        ProxyObject *p = lookup_proxydict(val);
+        if (p) Proxy_AddRefTo(p, slot);
+    }
+    else if (UNIQTYPE_IS_ARRAY_TYPE(t))
+    {
+        struct uniqtype *et = UNIQTYPE_ARRAY_ELEMENT_TYPE(t);
+        if (!et) return;
+        unsigned long esz = UNIQTYPE_SIZE_IN_BYTES(et);
+        unsigned n = UNIQTYPE_ARRAY_LENGTH(t);
+        for (unsigned i = 0; i < n; ++i)
+            Proxy_AdoptPtrFields((char *) region + i * esz, et);
+    }
+    else if (UNIQTYPE_IS_COMPOSITE_TYPE(t))
+    {
+        unsigned nmemb = UNIQTYPE_COMPOSITE_MEMBER_COUNT(t);
+        for (unsigned i = 0; i < nmemb; ++i)
+            Proxy_AdoptPtrFields((char *) region + t->related[i].un.memb.off,
+                                   t->related[i].un.memb.ptr);
+    }
+}
+
+// Create a base proxy for the foreign object at `addr`
 // Return NULL or a new reference
 ProxyObject *Proxy_GetOrCreateBase(void *addr)
 {
+    SS_ASSERT_PINNED(addr); // We expect the caller to have pinned the handle, otherwise the proxy may be invalid
+
     // Prevent recursion inside ourself
     static bool creating_base = false;
     if (creating_base) return NULL;
 
+    
     struct allocator *allocator;
     const void *alloc_start;
     struct uniqtype *alloc_type;
     struct liballocs_err* err;
-    err = __liballocs_get_alloc_info(addr, &allocator, &alloc_start, NULL,
+    
+    void *raw = ss_translate(addr);
+    err = __liballocs_get_alloc_info(raw, &allocator, &alloc_start, NULL,
             &alloc_type, NULL);
     if (err || !ALLOCATOR_HANDLE_LIFETIME_INSERT(allocator) || !alloc_type)
     {
         return NULL;
     }
 
-    // Check if already in proxy_dict
-    ProxyObject *proxy = proxy_for_addr(alloc_start);
+    // liballocs answers in raw (translated) address space, but the proxy must hold the Alaska *handle* for its base --
+    // Recover the base handle from the pointer results
+    void *base_handle = (char *)addr - ((char *)raw - (char *)alloc_start);
+
+    ProxyObject *proxy = lookup_proxydict(base_handle);
     if (proxy)
     {
         Py_INCREF(proxy);
@@ -208,20 +297,27 @@ ProxyObject *Proxy_GetOrCreateBase(void *addr)
         return NULL;
     }
     creating_base = true;
-    proxy = (ProxyObject *) ftyp->ft_getfrom((void*) alloc_start, ftyp);
+    proxy = (ProxyObject *) ftyp->ft_getfrom(base_handle, ftyp);
     creating_base = false;
     Py_DECREF(ftyp);
     assert(proxy);
 
     // Register the base proxy
-    Proxy_Register(proxy);
-
+    Proxy_Register_To_Dict(proxy);
     return proxy;
 }
 
 static void proxy_dealloc(ProxyObject *self)
 {
-    Proxy_Unregister(self);
+    // Drop the Alaska reference this proxy took when it adopted its handle
+    // A  *registered base* proxy took it in Proxy_Register_To_Dict and drops it in
+    // Proxy_Unregister_From_Dict (below), so skip those here
+    // Any *other* proxy that holds the handle 
+    // is not seen by Unregister
+    if (lookup_proxydict(self->p_ptr) != self)
+        ss_dec_refcount(self->p_ptr);
+
+    Proxy_Unregister_From_Dict(self);
 
     // Notify deletion of the reference
     proxy_delref(NULL, (const void **) &self->p_ptr);
@@ -241,7 +337,6 @@ static int proxy_is_gc(ProxyObject *self)
     return res;
 }
 
-// TODO: Add Python GC management
 PyTypeObject Proxy_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "allocs.Proxy",
@@ -278,18 +373,20 @@ PyObject *Proxy_GetFrom(void *data, ForeignTypeObject *type)
     return (PyObject *) obj;
 }
 
-PyObject *Proxy_CopyFrom(void *data, ForeignTypeObject *type)
+PyObject *Proxy_CopyFrom(void *src, ForeignTypeObject *type)
 {
     PyTypeObject *proxy_type = type->ft_proxy_type;
     ProxyObject *obj = PyObject_MaybeGC_New(ProxyObject, proxy_type);
     if (obj)
     {
-        obj->p_ptr = malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        obj->p_ptr = totally_malloc(UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
         __liballocs_set_alloc_type(obj->p_ptr, type->ft_type);
         // Should memcpy copy type information ?
-        memcpy(obj->p_ptr, data, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
-        Proxy_Register(obj);
-        __liballocs_detach_manual_dealloc_policy(obj->p_ptr);
+        // Re-derive raw backing from the handle(s) for the libc memcpy (not Alaska-
+        // instrumented); no-op when already raw / Alaska off.
+        memcpy(obj->p_ptr, ss_translate(src), UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        Proxy_Register_To_Dict(obj);
+        totally_free(obj->p_ptr);  // remains kept alive by proxy object
     }
     return (PyObject *) obj;
 }
@@ -300,7 +397,7 @@ int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type)
     if (PyObject_TypeCheck(obj, proxy_type))
     {
         ProxyObject *proxy = (ProxyObject *) obj;
-        memcpy(dest, proxy->p_ptr, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        memcpy(ss_translate(dest), ss_translate(proxy->p_ptr), UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
         return 0;
     }
 
@@ -311,7 +408,7 @@ int Proxy_StoreInto(PyObject *obj, void *dest, ForeignTypeObject *type)
     if (tmpobj)
     {
         ProxyObject *proxy = (ProxyObject *) tmpobj;
-        memcpy(dest, proxy->p_ptr, UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
+        memcpy(ss_translate(dest), ss_translate(proxy->p_ptr), UNIQTYPE_SIZE_IN_BYTES(type->ft_type));
         Py_DECREF(tmpobj);
         return 0;
     }

@@ -37,7 +37,8 @@ static PyObject *addrproxy_item(AddressProxyObject *self, Py_ssize_t index)
         PyErr_SetString(PyExc_IndexError, "address proxy index out of range");
         return NULL;
     }
-    void *item = self->p_base.p_ptr + index * Py_TYPE(self)->tp_itemsize;
+    // Re-derive the raw backing from the handle at each access (no-op when raw).
+    void *item = ss_translate(self->p_base.p_ptr) + index * Py_TYPE(self)->tp_itemsize;
     ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
     return itemtype->ft_getfrom(item, itemtype);
 }
@@ -72,6 +73,8 @@ static PyObject *addrproxy_subscript(AddressProxyObject *self, PyObject *index)
             Py_DECREF(base_proxy);
 
             sliceobj->p_base.p_ptr = self->p_base.p_ptr + start * Py_TYPE(self)->tp_itemsize;
+            // ZMTODO: why
+            ss_inc_refcount(sliceobj->p_base.p_ptr);
             sliceobj->ap_length = len;
         }
         return (PyObject *) sliceobj;
@@ -92,7 +95,7 @@ static int addrproxy_ass_item(AddressProxyObject *self, Py_ssize_t index, PyObje
         PyErr_SetString(PyExc_IndexError, "address proxy index out of range");
         return -1;
     }
-    void *item = self->p_base.p_ptr + index * Py_TYPE(self)->tp_itemsize;
+    void *item = ss_translate(self->p_base.p_ptr) + index * Py_TYPE(self)->tp_itemsize;
     ForeignTypeObject *itemtype = ((AddressProxyTypeObject *) Py_TYPE(self))->pointee_type;
     return itemtype->ft_storeinto(value, item, itemtype);
 }
@@ -126,7 +129,7 @@ static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kw
     // Default initialization => zero initialize the underlying array
     if (nargs == 0)
     {
-        memset(self->p_base.p_ptr, 0, self->ap_length * Py_TYPE(self)->tp_itemsize);
+        memset(ss_translate(self->p_base.p_ptr), 0, self->ap_length * Py_TYPE(self)->tp_itemsize);
         return 0;
     }
 
@@ -148,7 +151,7 @@ static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kw
     for (unsigned i = 0 ; i < arglen ; ++i)
     {
         PyObject *value = PySequence_Fast_GET_ITEM(seqarg, i);
-        void *item = self->p_base.p_ptr + i * itemsize;
+        void *item = ss_translate(self->p_base.p_ptr) + i * itemsize;
         if(itemtype->ft_storeinto(value, item, itemtype) < 0)
         {
             Py_DECREF(seqarg);
@@ -159,7 +162,7 @@ static int addrproxy_init(AddressProxyObject *self, PyObject *args, PyObject *kw
     // Zero initialize the rest of the array
     if (self->ap_length > arglen)
     {
-        void *first_uninit_item = self->p_base.p_ptr + arglen * itemsize;
+        void *first_uninit_item = ss_translate(self->p_base.p_ptr) + arglen * itemsize;
         memset(first_uninit_item, 0, (self->ap_length - arglen) * itemsize);
     }
 
@@ -190,7 +193,7 @@ static PyObject *addrproxy_repr(AddressProxyObject *self)
 // Special version for native strings
 static PyObject *addrproxy_str_repr(AddressProxyObject *self)
 {
-    PyObject *str_repr = PyUnicode_FromStringAndSize(self->p_base.p_ptr, self->ap_length);
+    PyObject *str_repr = PyUnicode_FromStringAndSize(ss_translate(self->p_base.p_ptr), self->ap_length);
     if (!str_repr)
     {
         PyErr_Clear();
@@ -204,24 +207,113 @@ static PyObject *addrproxy_str_repr(AddressProxyObject *self)
 // Compute the length of the pointed array (= 1 for pointer to single cell)
 static void addrproxy_initlength(AddressProxyObject *self, ForeignTypeObject *type)
 {
-    void *ptr = self->p_base.p_ptr;
     AddressProxyTypeObject *proxy_type = (AddressProxyTypeObject *) type->ft_proxy_type;
+    // Defensive: pointee_type is NULL when the pointee's kind has no
+    // ForeignType representation (AddressProxy_InitType clears that error and
+    // leaves a degraded class). Give such proxies length 0 instead of crashing.
+    if (!proxy_type->pointee_type)
+    {
+        self->ap_length = 0;
+        return;
+    }
     const struct uniqtype *ptyp = proxy_type->pointee_type->ft_type;
 
     if (UNIQTYPE_SIZE_IN_BYTES(ptyp) == 0 || !UNIQTYPE_HAS_KNOWN_LENGTH(ptyp))
     {
         self->ap_length = 0;
         return;
-    } 
-
-    Bounds bounds = __fetch_bounds_internal(ptr, ptr, ptyp);
-    // If ptr is not the base, it is a single element inside a larger array
-    if (bounds.base == ptr)
-    {
-        unsigned long byte_size = bounds.size;
-        self->ap_length = byte_size / UNIQTYPE_SIZE_IN_BYTES(ptyp);
     }
-    else self->ap_length = 1;
+
+    // HACK: minicrunch starts with a liballocs query. We *hope* the pointer doesn't move mid query (TODO: pin)
+    // after the query completes, minicrunch calculates bounds that are relative to the original pointer.
+    // we stash the raw pointer to support reallocations after query complete but before minicrunch return
+    void *ptr = ss_translate(self->p_base.p_ptr);
+    if (getenv("PYC_DBG"))
+    {
+        extern void *alaska_object_base(void *) __attribute__((weak));
+        extern unsigned long alaska_object_size(void *) __attribute__((weak));
+        extern void *alaska_heap_start(void) __attribute__((weak));
+        extern unsigned long alaska_heap_size(void) __attribute__((weak));
+        void *hs = &alaska_heap_start ? alaska_heap_start() : NULL;
+        unsigned long hz = &alaska_heap_size ? alaska_heap_size() : 0;
+        fprintf(stderr, "[PYC] handle=%p raw=%p heap=[%p,+%lx) in_range=%d alaska_base=%p alaska_size=%lu\n",
+            self->p_base.p_ptr, ptr, hs, hz,
+            (hs && ptr >= hs && (char*)ptr < (char*)hs + hz),
+            &alaska_object_base ? alaska_object_base(ptr) : (void*)-1,
+            &alaska_object_size ? alaska_object_size(ptr) : 0);
+    }
+    Bounds bounds = __fetch_bounds_internal(ptr, ptyp);
+    unsigned long elem_sz = UNIQTYPE_SIZE_IN_BYTES(ptyp);
+
+    // Alaska's own view of the chunk, as a fallback. liballocs cannot
+    // currently resolve allocation sites inside Alaska-transformed code (the
+    // meta allocsite records don't match the transformed binary), so
+    // __fetch_bounds_internal degenerates to its [obj, obj+1) failure
+    // sentinel there -- but Alaska itself knows the chunk's base and size
+    // (chunk-granularity, so possibly a few bytes over the requested size).
+    extern void *alaska_object_base(void *) __attribute__((weak));
+    extern unsigned long alaska_object_size(void *) __attribute__((weak));
+    void *ab = NULL;
+    unsigned long asz = 0;
+    if (&alaska_object_base && &alaska_object_size)
+    {
+        ab = alaska_object_base(ptr);
+        asz = alaska_object_size(ptr);
+    }
+
+    // NB size 0 is a legitimate answer (an empty array), so do not require
+    // room for a whole element here -- only reject minicrunch's [obj, obj+1)
+    // failure sentinel, which Alaska's own chunk size can contradict.
+    bool liballocs_exact = (bounds.base == ptr
+            && !(bounds.size == 1 && asz > 1));
+
+    if (liballocs_exact)
+    {
+        // liballocs knows the allocation (typed, exact size): ptr is the
+        // first element of an array
+        self->ap_length = bounds.size / elem_sz;
+    }
+    else if (ForeignBaseType_IsChar(ptyp) && elem_sz == 1)
+    {
+        /* A char-element pointer whose exact extent liballocs could not
+         * determine: its length in C is its NUL terminator, not the size of
+         * whatever allocation it happens to sit in. Using the allocation size
+         * would append the chunk's padding (a string read back with trailing
+         * garbage), and using 1 would truncate an interior pointer to a single
+         * byte -- both observed on libxml2, whose node names point into the
+         * parser's interned string dictionary.
+         *
+         * The scan is capped by whatever upper bound we do have (Alaska's
+         * chunk end, else liballocs' bounds), so it can never read past the
+         * containing allocation; with no bound at all we do not guess. */
+        unsigned long cap = 0;
+        if (ab && asz && (char *) ptr >= (char *) ab
+                && (char *) ptr < (char *) ab + asz)
+            cap = asz - (unsigned long) ((char *) ptr - (char *) ab);
+        else if (bounds.base && bounds.size > 1
+                && (char *) ptr >= (char *) bounds.base
+                && (char *) ptr < (char *) bounds.base + bounds.size)
+            cap = bounds.size - (unsigned long) ((char *) ptr - (char *) bounds.base);
+
+        if (cap)
+        {
+            unsigned long n = 0;
+            while (n < cap && ((const char *) ptr)[n] != '\0') ++n;
+            self->ap_length = n;
+        }
+        else self->ap_length = 1;
+    }
+    else if (ab == ptr && asz >= elem_sz)
+    {
+        // Fall back to Alaska's chunk bounds
+        self->ap_length = asz / elem_sz;
+    }
+    else
+    {
+        // If ptr is not the base, it is a single element inside a larger array
+        self->ap_length = 1;
+    }
+
 }
 
 static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
@@ -269,7 +361,27 @@ static PyObject *addrproxy_getfrom(void *data, ForeignTypeObject *type)
         }
 
         obj->p_base.p_ptr = ptr;
+        ss_inc_refcount(ptr); // Keep the pointed object alive while this proxy exists
         addrproxy_initlength(obj, type);
+
+        // base_proxy == NULL here means liballocs could not type this pointee -- under
+        // Alaska, that is a foreign (e.g. fixture-allocated) chunk whose internal
+        // pointer fields never went through a working __notify_copy. 
+        // Re-establish those references from the static pointee type so the pointees survive once whatever
+        // else points at them is dropped (struct_memcpy_lifetime). Typed pointees take
+        // the base_proxy branch above and are already tracked, so they are not walked.
+        if (!base_proxy && ss_libalaska_is_present())
+        {
+            struct uniqtype *pointee_t =
+                ((AddressProxyTypeObject *) type->ft_proxy_type)->pointee_type->ft_type;
+            if (pointee_t)
+            {
+                void *raw = ss_translate(ptr);
+                unsigned long sz = UNIQTYPE_SIZE_IN_BYTES(pointee_t);
+                for (Py_ssize_t i = 0; sz && i < obj->ap_length; ++i)
+                    Proxy_AdoptPtrFields((char *) raw + i * sz, pointee_t);
+            }
+        }
     }
     return (PyObject *) obj;
 }
@@ -314,6 +426,11 @@ static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *typ
     // None -> NULL
     if (obj == Py_None)
     {
+        // Drop whatever the slot held. The two barriers are disjoint and each is a
+        // safe no-op outside its domain: ss_dec_refcount acts only on a handle, while
+        // __notify_ptr_write's policy lookup ignores handles (a handle sits above
+        // MAXIMUM_USER_ADDRESS) and fires only for raw lifetime-policy pointees.
+        ss_dec_refcount(*(void **) dest);
         __notify_ptr_write((const void **) dest, NULL);
         *(void **) dest = NULL;
         return 0;
@@ -329,12 +446,24 @@ static int addrproxy_storeinto(PyObject *obj, void *dest, ForeignTypeObject *typ
     }
 
     void *val = ((ProxyObject *) obj)->p_ptr;
+    // Two disjoint write barriers, each a safe no-op outside its domain:
+    //  * Handle pointees are kept alive by Alaska's refcount (ss_dec/inc_refcount).
+    //    These no-op on NULL / raw pointers, so they are safe on an uninitialised or
+    //    scalar slot. The liballocs policy cannot manage handles.
+    //  * Raw lifetime-policy pointees are kept alive by __notify_ptr_write (which
+    //    delref's the old value and addref's the new one); it ignores handles.
+    ss_dec_refcount(*(void **) dest);
+    ss_inc_refcount(val);
     __notify_ptr_write((const void **) dest, val);
     *(void **) dest = val;
-    // Keep `obj` alive while this slot references it. For heap pointees the line
-    // above already addref'd via the GC policy; this is a no-op for those and
-    // catches the values liballocs cannot track (e.g. libffi closures).
-    Proxy_RetainStoredPtr((const void **) dest, obj, val);
+    // Keep `obj` alive while this slot references it. For raw heap pointees
+    // __notify_ptr_write already addref'd via the GC policy (this then no-ops); it
+    // also catches values liballocs cannot track, e.g. libffi closure trampolines in
+    // mmap'd exec memory (closure_lifetime). Skip it for handles: ss_inc_refcount
+    // already owns the reference, and adding a Python strong ref here would never be
+    // released (its drop rides on __notify_ptr_write, which ignores handles) -> leak.
+    if (!ss_is_handle(val))
+        Proxy_RetainStoredPtr((const void **) dest, obj, val);
     return 0;
 }
 
@@ -387,7 +516,24 @@ static void *addrproxy_getdataptr(PyObject *obj, ForeignTypeObject *type)
     }
 
     if (addrproxy_typecheck(obj, type)) return &((ProxyObject *) obj)->p_ptr;
-    else return NULL;
+
+    // A one-element pointer cell (T.ptr(): an array holding a single T*)
+    // passed where T* is expected: the argument is the pointer STORED IN the
+    // cell, which lives at p_ptr -- so hand libffi p_ptr itself rather than
+    // &p_ptr. This lets one cell serve first as the T** out-param of an
+    // "open"-style call and then as the resulting T* handle in later calls:
+    //   repo = git_repository.ptr()
+    //   git_repository_open(repo, path)   # T** out-param
+    //   git_commit_lookup(commit, repo, oid)  # T* handle, same object
+    if (Py_TYPE(Py_TYPE(obj)) == &AddressProxy_Metatype)
+    {
+        AddressProxyTypeObject *objtyp = (AddressProxyTypeObject *) Py_TYPE(obj);
+        if (objtyp->pointee_type == type
+                && ((AddressProxyObject *) obj)->ap_length == 1)
+            return ((ProxyObject *) obj)->p_ptr;
+    }
+
+    return NULL;
 }
 
 static int addrproxy_traverse(AddressProxyObject *self, visitproc visit, void *arg)
@@ -398,7 +544,7 @@ static int addrproxy_traverse(AddressProxyObject *self, visitproc visit, void *a
 
     for (int i = 0 ; i < self->ap_length ; ++i)
     {
-        void *item = self->p_base.p_ptr + i * Py_TYPE(self)->tp_itemsize;
+        void *item = ss_translate(self->p_base.p_ptr) + i * Py_TYPE(self)->tp_itemsize;
         int vret = elem_type->ft_traverse(item, visit, arg, elem_type);
         if (vret) return vret;
     }
@@ -440,7 +586,12 @@ ForeignTypeObject *AddressProxy_NewType(const struct uniqtype *type)
     {
         ftype->ft_type = type;
         ftype->ft_proxy_type = (PyTypeObject *) htype;
-        ftype->ft_constructor = NULL;
+        // `T.ptr()` / `T.ptr(obj)`: a fresh NULL- (or obj-) initialised
+        // one-element pointer cell (a T* slot), passable wherever C expects
+        // T** -- the out-parameter idiom for opaque handles, e.g.
+        //   repo = git_repository.ptr(); git_repository_open(repo, path)
+        // Read the resulting object back out with repo[0].
+        ftype->ft_constructor = ForeignType_CellCtorNull;
         ftype->ft_getfrom = addrproxy_getfrom;
         ftype->ft_copyfrom = addrproxy_getfrom;
         ftype->ft_storeinto = addrproxy_storeinto;
@@ -458,6 +609,10 @@ void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
     const struct uniqtype *pointee_type = type->related[0].un.t.ptr;
     ForeignTypeObject *pointee_ftype = ForeignType_GetOrCreate(pointee_type);
     htype->pointee_type = pointee_ftype;
+    // A pointee whose kind has no ForeignType representation leaves a pending
+    // exception from ForeignType_New; swallow it here and keep a degraded
+    // (opaque, length-0) proxy class rather than poisoning the caller.
+    if (!pointee_ftype) PyErr_Clear();
 
     if (pointee_ftype)
     {
@@ -483,6 +638,11 @@ void AddressProxy_InitType(ForeignTypeObject *self, const struct uniqtype *type)
     assert(typready == 0);
 }
 
+
+// Proxy for arrays of foreign types.
+// The proxy is a Python object that behaves like a sequence of the underlying type.
+// It manages the memory and lifetime of the underlying array.
+// This ctor is only called when the array is created from Python code, not when it is returned from a foreign function.
 static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeObject *type)
 {
     // There must be exactly one sequence argument used as the array initializer
@@ -515,27 +675,31 @@ static PyObject *arrayproxy_ctor(PyObject *args, PyObject *kwargs, ForeignTypeOb
             return NULL;
         }
     }
-
+    // ZMHINT: We allocate a new proxy object with the underlying AddressProxyObject type as the binary type 
+    // and the ft_proxy_type as the 'type' we tell Python and Python code about
     AddressProxyObject *obj = PyObject_GC_New(AddressProxyObject, type->ft_proxy_type);
     if (obj)
     {
         Py_ssize_t itemsize = type->ft_proxy_type->tp_itemsize;
+
         if (ForeignBaseType_IsChar(UNIQTYPE_ARRAY_ELEMENT_TYPE(type->ft_type)))
         {
             // Little hack to append a \0 character when copying a string
-            obj->p_base.p_ptr = malloc((len + 1) * itemsize);
+            obj->p_base.p_ptr = totally_malloc((len + 1) * itemsize);
             memset(obj->p_base.p_ptr + len*itemsize, '\0', itemsize);
         }
-        else obj->p_base.p_ptr = malloc(len * itemsize);
+        else obj->p_base.p_ptr = totally_malloc(len * itemsize);
         obj->ap_length = len;
 
-        __liballocs_set_alloc_type(obj->p_base.p_ptr,
+        __liballocs_set_alloc_type(ss_translate(obj->p_base.p_ptr), 
             __liballocs_get_or_create_array_type(
                 UNIQTYPE_ARRAY_ELEMENT_TYPE(type->ft_type), len));
 
-        Proxy_Register((ProxyObject *) obj);
-        __liballocs_detach_manual_dealloc_policy(obj->p_base.p_ptr);
+        Proxy_Register_To_Dict((ProxyObject *) obj);
 
+        totally_free(obj->p_base.p_ptr); // remains kept alive by proxy object 
+        
+        
         if (addrproxy_init(obj, args, kwargs) < 0)
         {
             Py_DECREF(obj);

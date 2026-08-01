@@ -9,8 +9,9 @@ ROOT = Path(__file__).parent.absolute()
 # CMake build locates the pre-built copies and passes their paths via the
 # environment; fall back to the in-tree stackscan submodule when building
 # setup.py directly.
+STACKSCAN = Path(environ.get('STACKSCAN', ROOT / 'contrib/stackscan'))
 LIBALLOCS = Path(environ.get('LIBALLOCS',
-                             ROOT / 'contrib/stackscan/contrib/liballocs'))
+                             STACKSCAN / 'contrib/liballocs'))
 
 # Set allocscc as the compiler to generate uniqtype symbols (only if enabled)
 use_allocscc = environ.get('USE_ALLOCSCC', 'no').lower() in ('yes', '1', 'true')
@@ -24,6 +25,7 @@ INCLUDE_PATHS = list(map(str, [
     LIBALLOCS / 'include',
     LIBALLOCS / 'contrib/libsystrap/contrib/librunt/include',
     LIBALLOCS / 'contrib/liballocstool/include',
+    STACKSCAN / 'include',  # handle_query.h: translate-then-index liballocs glue
     ROOT / 'include'
 ]))
 
@@ -53,6 +55,31 @@ if use_allocscc:
 
 if DEBUG:
     compile_args.append("-O0")
+
+# Alaska is a configure-time option (SS_HAVE_ALASKA=1, set by the CMake build when
+# USE_ALASKA is on). handle_query.h keys off this macro to decide whether
+# ss_translate()/ss_pin() bind to the Alaska runtime or degrade to a compile-time
+# passthrough/no-op. liballocs itself is always assumed present, so it needs no gate.
+#
+# The extension is NOT handle-transformed (it calls ss_translate explicitly); it
+# just needs to link libalaska so those runtime symbols resolve. Alaska lives under
+# the dir passed in ALASKA (opt/alaska-anchorage/lib holds libalaska.so).
+extra_libraries = []
+extra_objects = []
+if environ.get('SS_HAVE_ALASKA'):
+    compile_args.append('-DSS_HAVE_ALASKA')
+    ALASKA = Path(environ.get('ALASKA', STACKSCAN / 'contrib/alaska'))
+    # Which opt/ tree to link against (must match the tree the fixtures are
+    # compiled with); the CMake build passes ALASKA_OPT_TREE through.
+    alaska_lib = ALASKA / 'opt' / environ.get('ALASKA_OPT_TREE', 'alaska-anchorage') / 'lib'
+    LIBRARY_PATHS.append(str(alaska_lib))
+    extra_libraries.append('alaska')
+    # alaska_translate()/pin/unpin are inlined by the Alaska transform and thus not
+    # exported by libalaska. The extension is not transformed, so link a native
+    # object compiled from Alaska's alaska_translate.bc (path supplied by CMake).
+    translate_obj = environ.get('ALASKA_TRANSLATE_OBJ')
+    if translate_obj:
+        extra_objects.append(translate_obj)
 
 # Optional: specialised PyObject_to_T<T> conversion translators (compile-time,
 # default off; set via the SPECIALISE_CONVERSION CMake option). When enabled, the
@@ -85,16 +112,20 @@ elif environ.get('INJECT_CONVERSION'):
         f'--embed-dir={ROOT / "include"}',                 # pyc_inject.hpp
     ]
 
-# Add RPATH so the module can find liballocs at runtime
+# Add RPATH so the module can find liballocs (and libalaska, when enabled) at runtime
 link_args = [
     f'-Wl,-rpath,{LIBALLOCS / "lib"}'
 ]
+if environ.get('SS_HAVE_ALASKA'):
+    # Must point at the same opt/ tree we linked against (ALASKA_OPT_TREE).
+    link_args.append(f'-Wl,-rpath,{alaska_lib}')
 
 allocs = Extension('allocs',
                    include_dirs = INCLUDE_PATHS,
-                   libraries = ['dl', 'ffi', 'allocs'],
+                   libraries = ['dl', 'ffi', 'allocs'] + extra_libraries,
                    library_dirs = LIBRARY_PATHS,
                    sources = [str(p) for p in sorted((ROOT / 'src').glob('*.c'))],
+                   extra_objects = extra_objects,
                    extra_compile_args = compile_args,
                    extra_link_args = link_args,
                    undef_macros = ["NDEBUG"] if DEBUG else [])

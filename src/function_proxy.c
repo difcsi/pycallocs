@@ -40,9 +40,23 @@ static ffi_type *ffi_type_for_uniqtype(const struct uniqtype *type)
         case SUBPROGRAM:
             return &ffi_type_pointer;
         case ENUMERATION:
-            // get the base type for the enumeration
-            type = type->related[0].un.t.ptr;
-            if (!type) return NULL;
+            // Prefer the recorded underlying base type; when liballocs did not
+            // record one (the common case) fall back to a signed integer sized
+            // to the enum -- C enum constants have type int, so signed matches.
+            if (type->related[0].un.t.ptr)
+            {
+                type = type->related[0].un.t.ptr;
+                // fall through to BASE with the underlying integer type
+            }
+            else
+            {
+                unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
+                if (size == 1) return &ffi_type_sint8;
+                if (size == 2) return &ffi_type_sint16;
+                if (size == 4) return &ffi_type_sint32;
+                if (size == 8) return &ffi_type_sint64;
+                return NULL;
+            }
             // fall through
         case BASE:
         {
@@ -342,15 +356,28 @@ static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds
     // (struct_global_swap). Released right after the result is built.
     Proxy_BeginDeferFrees();
     {
-        unsigned retsize = UNIQTYPE_SIZE_IN_BYTES(ret_type);
+        unsigned natret = UNIQTYPE_SIZE_IN_BYTES(ret_type);
+        unsigned retsize = natret;
         // Return values can be widened by libffi up to sizeof(ffi_arg)
         if (sizeof(ffi_arg) > retsize) retsize = sizeof(ffi_arg);
         char retval[retsize];
 
         ffi_call(type->ff_cif, self->p_ptr, retval, ff_args);
 
-        // FIXME: On big-endian architectures, we need to shift retval pointer if
-        // it has been widened by libffi. For the moment assume we are little-endian
+        // libffi widens *integral* return values (ints, enums, pointers) smaller
+        // than ffi_arg up to a full ffi_arg; floats and by-value aggregates are
+        // not widened. On big-endian the meaningful low-order bytes land at the
+        // end of that slot, so shift the pointer the wrappers read from.
+        char *retp = retval;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        if (natret < sizeof(ffi_arg) &&
+            (UNIQTYPE_IS_ENUM_TYPE(ret_type) || UNIQTYPE_IS_POINTER_TYPE(ret_type) ||
+             (UNIQTYPE_IS_BASE_TYPE(ret_type) &&
+              ret_type->un.base.enc != 0x4 /* DW_ATE_float */)))
+        {
+            retp += sizeof(ffi_arg) - natret;
+        }
+#endif
 #ifdef PYCALLOCS_HAVE_SPECIALISE
         // Fast path: hand a by-value struct return back as a plain Python object
         // (types.SimpleNamespace) via a specialised T_to_PyObject<T>, the mirror
@@ -358,10 +385,10 @@ static PyObject *funproxy_call(ProxyObject *self, PyObject *args, PyObject *kwds
         // ft_copyfrom (a proxy); rc<0 leaves result NULL with an exception set.
         result = NULL;
         int spec_rc = (UNIQTYPE_KIND(ret_type) == COMPOSITE)
-            ? Specialise_FromValue(retval, ret_ftype, &result) : 1;
-        if (spec_rc > 0) result = ret_ftype->ft_copyfrom(retval, ret_ftype);
+            ? Specialise_FromValue(retp, ret_ftype, &result) : 1;
+        if (spec_rc > 0) result = ret_ftype->ft_copyfrom(retp, ret_ftype);
 #else
-        result = ret_ftype->ft_copyfrom(retval, ret_ftype);
+        result = ret_ftype->ft_copyfrom(retp, ret_ftype);
 #endif
     }
     Proxy_EndDeferFrees();
@@ -481,7 +508,7 @@ static PyObject *closureproxy_ctor(PyObject *args, PyObject *kwds, ForeignTypeOb
         }
 
         // Register the proxy
-        Proxy_Register((ProxyObject *) obj);
+        Proxy_Register_To_Dict((ProxyObject *) obj);
         // Do not release the manual allocation because our deallocation is
         // special. If liballocs supports custom deallocator we should use them
         // instead of this workaround.
@@ -493,7 +520,7 @@ static PyObject *closureproxy_ctor(PyObject *args, PyObject *kwds, ForeignTypeOb
 
 static void closureproxy_dealloc(ClosureProxyObject *self)
 {
-    Proxy_Unregister((ProxyObject *) self);
+    Proxy_Unregister_From_Dict((ProxyObject *) self);
 
     ffi_closure_free(self->fc_closure);
     Py_DECREF(self->fc_callable);

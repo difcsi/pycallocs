@@ -17,6 +17,17 @@ set(LIBS_BIN_DIR  "${CMAKE_CURRENT_BINARY_DIR}/libs")
 set(ALLOCSCC          "${LIBALLOCS_DIR}/tools/lang/c/bin/allocscc")
 set(LIBALLOCS_PRELOAD "${LIBALLOCS_DIR}/lib/liballocs_preload.so")
 
+# Alaska toolchain/runtime locations (used to build the relocate fixture with the
+# Alaska transform, and to load it at run time). Mirrors stackscan's test recipe.
+# The tree is selected by the top-level ALASKA_OPT_TREE cache variable.
+set(_ALASKA_ANCHORAGE "${ALASKA_DIR}/opt/${ALASKA_OPT_TREE}")
+set(_ALASKA_LLVM      "${ALASKA_DIR}/opt/llvm")
+set(_ALASKA_GLLVM     "${ALASKA_DIR}/opt/gllvm")
+# liballocs writes per-binary type metadata (-meta.so) under META_BASE; the default
+# /usr/lib/meta is not writable, so keep it in the build tree (set at both compile
+# and run time so the metadata is generated and then found).
+set(_META_BASE        "${CMAKE_CURRENT_BINARY_DIR}/meta")
+
 # ---------------------------------------------------------------------------
 # Build the test fixture shared objects with allocscc (was tests/libs/Makefile).
 # Each lib lives in its own subfolder: libs/<name>/<name>.c is the source; the
@@ -29,10 +40,42 @@ file(GLOB LIB_SOURCES "${LIBS_SRC_DIR}/*/*.c")
 # Drop allocscc-generated intermediates (*.cil.c, *.allocstubs.c, *.usedtypes.c).
 list(FILTER LIB_SOURCES EXCLUDE REGEX "\\.(cil|allocstubs|usedtypes)\\.")
 
+# The relocate fixture hard-depends on the Alaska runtime (hrealloc/alaska_translate),
+# so its .so is unloadable without Alaska. Only build it when Alaska is enabled,
+# matching the gated relocate test below.
+if(NOT _ALASKA_ENABLED)
+    list(FILTER LIB_SOURCES EXCLUDE REGEX "/relocate/")
+endif()
+
+# When Alaska is enabled, build EVERY fixture through the Alaska transform so the
+# whole suite exercises handles: allocscc delegates codegen to ALLOCSCC_CC=alaska,
+# giving both liballocs uniqtypes (from cilly, needed so the proxy layer can type
+# the allocation) AND handles (from the alaska backend). This mirrors stackscan's
+# ALLOCSCC_ALASKA_ENV: CC_IS_CLANG makes CIL parse clang's _Float* types and drop
+# gcc-only flags, META_BASE captures each fixture's type meta-DSO in the build tree,
+# and PATH/LD_LIBRARY_PATH expose gclang/opt/llc/get-bc and the runtime libs to the
+# build. Without Alaska, plain allocscc (default backend, no transform) as before.
+set(_extra_cc_env)
+set(_cc_label "allocscc")
+if(_ALASKA_ENABLED)
+    set(_extra_cc_env
+        "ALLOCSCC_CC=${ALASKA}"
+        "CC_IS_CLANG=1"
+        "ALASKA=${_ALASKA_ANCHORAGE}"
+        "ALASKA_CLANG=${_ALASKA_LLVM}/bin/clang"
+        "ALASKA_GCLANG=${_ALASKA_GLLVM}/bin/gclang"
+        "LLVM_COMPILER=clang"
+        "LDFLAGS=-fuse-ld=bfd"
+        "PATH=${_ALASKA_LLVM}/bin:${_ALASKA_GLLVM}/bin:${_ALASKA_ANCHORAGE}/bin:$ENV{PATH}"
+        "LD_LIBRARY_PATH=${_ALASKA_ANCHORAGE}/lib:${_ALASKA_LLVM}/lib:${LIBALLOCS_DIR}/lib:$ENV{LD_LIBRARY_PATH}")
+    set(_cc_label "allocscc+alaska")
+endif()
+
 set(_lib_sos "")
 foreach(src ${LIB_SOURCES})
     get_filename_component(name "${src}" NAME_WE)
     set(so "${LIBS_BIN_DIR}/${name}/${name}.so")
+
     add_custom_command(
         OUTPUT "${so}"
         # Ensure the per-lib output subfolder exists (allocscc won't create it).
@@ -43,6 +86,8 @@ foreach(src ${LIB_SOURCES})
         # makes (e.g. save_hw storing a heap pointer into a global) -> struct_global.
         COMMAND ${CMAKE_COMMAND} -E env "LIBALLOCS=${LIBALLOCS_DIR}"
                 "ALLOCSCC_TRAP_PTR_WRITES=1"
+                "META_BASE=${_META_BASE}"
+                ${_extra_cc_env}
                 "${ALLOCSCC}" -std=gnu11 -g -fPIC -shared
                 "-I${LIBALLOCS_DIR}/include" "${src}" -o "${so}"
         # allocscc drops intermediates next to the .so (*.so.allocstubs.{c,i,o},
@@ -52,7 +97,7 @@ foreach(src ${LIB_SOURCES})
                 "${so}.allocstubs.c" "${so}.allocstubs.i" "${so}.allocstubs.o"
                 "${so}.usedtypes.c" "${so}.usedtypes.o" "${so}.linked.o"
         DEPENDS "${src}"
-        COMMENT "Building test lib ${name}.so with allocscc"
+        COMMENT "Building test lib ${name}.so with ${_cc_label}"
         VERBATIM)
     list(APPEND _lib_sos "${so}")
 endforeach()
@@ -75,11 +120,30 @@ file(GLOB TEST_SCRIPTS "${TESTS_SRC_DIR}/py/*/*.py")
 
 foreach(script ${TEST_SCRIPTS})
     get_filename_component(name "${script}" NAME_WE)
+
+    # `relocate` proves a proxy survives an Alaska backing move (hrealloc). It only
+    # holds under the full Alaska handle transform: without it, a realloc move would
+    # invalidate the proxy's pointer. Skip registering it in non-Alaska builds.
+    # (_ALASKA_ENABLED is set by the top-level CMakeLists before add_subdirectory.)
+    if(name STREQUAL "relocate" AND NOT _ALASKA_ENABLED)
+        continue()
+    endif()
+
     get_filename_component(testdir "${script}" DIRECTORY)
     set(expected "${testdir}/${name}.out")
     set(_expected_arg "")
     if(EXISTS "${expected}")
         set(_expected_arg "-DEXPECTED=${expected}")
+    endif()
+
+    # META_BASE is used unconditionally: every fixture (Alaska or plain allocscc)
+    # writes its type meta-DSO into the build tree, and liballocs must look there to
+    # resolve it at run time. The libalaska search path is only needed when Alaska is
+    # enabled (then every fixture is transformed and its dlopen pulls in libalaska).
+    set(_test_ld_lib "${LIBALLOCS_DIR}/lib")
+    set(_test_extra_env ";META_BASE=${_META_BASE}")
+    if(_ALASKA_ENABLED)
+        set(_test_ld_lib "${_ALASKA_ANCHORAGE}/lib:${LIBALLOCS_DIR}/lib")
     endif()
 
     add_test(NAME ${name}
@@ -110,5 +174,5 @@ foreach(script ${TEST_SCRIPTS})
         # to elflib's search path from this root.
         # PYTHONPATH carries both the repo root (for elflib/allocs) and the tests
         # dir (for the shared pyc_testlib helper that the tests import).
-        ENVIRONMENT "LD_PRELOAD=${LIBALLOCS_PRELOAD}:${BASETYPES_PROVIDER};PYTHONPATH=${CMAKE_SOURCE_DIR}:${TESTS_SRC_DIR};LD_AUDIT=${LINKPY_AUDIT_SO};LD_LIBRARY_PATH=${LIBALLOCS_DIR}/lib;GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288;PYCALLOCS_TEST_LIBS=${LIBS_BIN_DIR}")
+        ENVIRONMENT "LD_PRELOAD=${LIBALLOCS_PRELOAD}:${BASETYPES_PROVIDER};PYTHONPATH=${CMAKE_SOURCE_DIR}:${TESTS_SRC_DIR};LD_AUDIT=${LINKPY_AUDIT_SO};LD_LIBRARY_PATH=${_test_ld_lib};GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288;PYCALLOCS_TEST_LIBS=${LIBS_BIN_DIR}${_test_extra_env}")
 endforeach()

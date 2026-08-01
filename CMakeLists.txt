@@ -101,7 +101,15 @@ endif()
 # ---------------------------------------------------------------------------
 set(ALASKA_DIR "${STACKSCAN_DIR}/contrib/alaska"
     CACHE PATH "alaska source/build root (pre-built)")
-set(ALASKA "${ALASKA_DIR}/opt/alaska-anchorage/bin/alaska"
+# Which of alaska's opt/ install trees to compile and run against. The trees
+# differ in enabled runtime features (see alaska's CMakePresets.json):
+#   alaska-anchorage             compaction only (no refcount API)
+#   alaska-refcount-anchorage    + handle refcounts (no cycle collection)
+#   alaska-refcount-gc-anchorage + refcounts, stack scan and cycle collection
+#                                  (the Yukon configuration)
+set(ALASKA_OPT_TREE "alaska-anchorage"
+    CACHE STRING "alaska opt/ tree to use (e.g. alaska-refcount-gc-anchorage)")
+set(ALASKA "${ALASKA_DIR}/opt/${ALASKA_OPT_TREE}/bin/alaska"
     CACHE FILEPATH "alaska compiler wrapper")
 set(ALASKA_CLANG "${ALASKA_DIR}/opt/llvm/bin/clang"
     CACHE FILEPATH "alaska's bundled clang (without alaska transformation passes)")
@@ -133,22 +141,39 @@ if(NOT _py_rc EQUAL 0)
 endif()
 
 # ---------------------------------------------------------------------------
-# Choose the compiler driver the extension is built with.
-#   USE_ALLOCSCC     -> emits uniqtype symbols (delegates codegen to alaska)
-#   USE_ALASKA_CLANG -> alaska's bundled clang, no transformation passes (default)
-#   USE_ALASKA       -> full alaska compiler with handle-based transformation
+# Choose the compiler driver the EXTENSION is built with, and whether the Alaska
+# runtime is in use.
+#
+# The pycallocs extension is NEVER built with the Alaska handle transform: it
+# manipulates handles explicitly (ss_translate) and links the Alaska runtime, so
+# transforming it would double-translate and, in practice, cannot be linked as a
+# Python .so (the Alaska driver links an executable, leaving Py* symbols + main
+# undefined). The handle transform applies ONLY to the test fixtures (tests/),
+# whose malloc() must yield real handles.
+#
+#   USE_ALLOCSCC     -> liballocs' allocscc (emits uniqtype symbols), no transform
+#   USE_ALASKA_CLANG -> alaska's bundled clang, no transform passes (default)
+#   USE_ALASKA       -> Alaska runtime in use: still build the extension with
+#                       alaska's clang (NO transform), but define SS_HAVE_ALASKA,
+#                       link libalaska, and build the fixtures WITH the transform.
+#
+# _ALASKA_ENABLED drives the SS_HAVE_ALASKA macro (handle_query.h), libalaska
+# linking, and the transformed-fixture / relocate-test wiring.
 # ---------------------------------------------------------------------------
+set(_ALASKA_ENABLED FALSE)
 if(USE_ALLOCSCC)
     set(EXT_CC "${ALLOCSCC}")
-elseif(USE_ALASKA_CLANG)
+elseif(USE_ALASKA OR USE_ALASKA_CLANG)
+    # Either way the extension uses alaska's clang WITHOUT the transform passes.
     set(EXT_CC "${ALASKA_CLANG}")
+    if(USE_ALASKA)
+        set(_ALASKA_ENABLED TRUE)
+    endif()
     if(NOT BUILD_STACKSCAN AND NOT EXISTS "${ALASKA_CLANG}")
         message(FATAL_ERROR
             "alaska's clang not found at ${ALASKA_CLANG}.\n"
-            "Build stackscan first or set -DUSE_ALASKA_CLANG=OFF.")
+            "Build stackscan first or set -DUSE_ALASKA_CLANG=OFF -DUSE_ALASKA=OFF.")
     endif()
-elseif(USE_ALASKA)
-    set(EXT_CC "${ALASKA}")
 else()
     set(EXT_CC "")  # default system compiler chosen by setuptools
 endif()
@@ -157,6 +182,7 @@ endif()
 # Environment shared by the extension build and the test run.
 # ---------------------------------------------------------------------------
 set(_build_env
+    "STACKSCAN=${STACKSCAN_DIR}"
     "LIBALLOCS=${LIBALLOCS_DIR}"
     "LIBRUNT=${LIBRUNT_DIR}"
     "LIBSYSTRAP=${LIBSYSTRAP_DIR}"
@@ -192,6 +218,30 @@ endif()
 if(EXT_CC)
     list(APPEND _build_env "CC=${EXT_CC}")
 endif()
+if(_ALASKA_ENABLED)
+    # Alaska runtime in use: make the extension handle-aware (handle_query.h keys
+    # off SS_HAVE_ALASKA) and link libalaska so ss_translate() resolves. The
+    # extension is still built WITHOUT the transform (CC = alaska's clang above).
+    list(APPEND _build_env "SS_HAVE_ALASKA=1")
+    list(APPEND _build_env "ALASKA_OPT_TREE=${ALASKA_OPT_TREE}")
+
+    # alaska_translate()/pin/unpin are normally INLINED by the Alaska transform, so
+    # libalaska exports no callable symbols for them. The extension is NOT
+    # transformed, so it needs native definitions: compile Alaska's shipped
+    # alaska_translate.bc (LLVM bitcode) to an object with alaska's clang and link
+    # it into the extension (the "translate-native" mechanism in handle_query.h).
+    set(_ALASKA_TRANSLATE_BC "${ALASKA_DIR}/opt/${ALASKA_OPT_TREE}/lib/alaska_translate.bc")
+    set(_ALASKA_TRANSLATE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/alaska_translate_native.o")
+    add_custom_command(
+        OUTPUT "${_ALASKA_TRANSLATE_OBJ}"
+        COMMAND "${ALASKA_CLANG}" -c -fPIC -O2 "${_ALASKA_TRANSLATE_BC}"
+                -o "${_ALASKA_TRANSLATE_OBJ}"
+        DEPENDS "${_ALASKA_TRANSLATE_BC}"
+        COMMENT "Compiling Alaska native translate object (alaska_translate.bc -> .o)"
+        VERBATIM)
+    add_custom_target(alaska-translate-obj DEPENDS "${_ALASKA_TRANSLATE_OBJ}")
+    list(APPEND _build_env "ALASKA_TRANSLATE_OBJ=${_ALASKA_TRANSLATE_OBJ}")
+endif()
 
 # ---------------------------------------------------------------------------
 # Build the Python extension via pip/setuptools (setup.py drives the actual
@@ -209,6 +259,9 @@ if(_CPYTHON_DEP_TARGET)
 endif()
 if(_STACKSCAN_DEP_TARGETS)
     add_dependencies(build-python ${_STACKSCAN_DEP_TARGETS})
+endif()
+if(_ALASKA_ENABLED)
+    add_dependencies(build-python alaska-translate-obj)
 endif()
 
 # ---------------------------------------------------------------------------
