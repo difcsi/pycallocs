@@ -1,0 +1,5 @@
+*.o
+bug1_mmap_realloc
+bug4_policy_oob
+query
+core*
