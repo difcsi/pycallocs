@@ -1,0 +1,4 @@
+self-cycle collected:	true
+two-chunk cycle collected:	true
+live cycle kept:	true
+field intact:	true

@@ -1,0 +1,4 @@
+gen self-cycle collected:	true
+still reachable mid-steps:	true
+gen two-chunk collected:	true
+gen live cycle kept:	true	true

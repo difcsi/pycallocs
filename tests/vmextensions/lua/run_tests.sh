@@ -15,12 +15,16 @@ ROOT="$(cd "$HERE/../../.." && pwd)"
 
 # --stock: run through the vendored contrib/lua interpreter + require
 # "luaproxy" (package.cpath -> the luaproxy build dir) instead of the embedded luahost.
+# --native: run through the forked contrib/lua interpreter built with
+# LIBALLOCS_CONFIG=1 (native LUA_TFOREIGN; the 'allocs' library is built in,
+# no luaproxy.so involved).
 USE_STOCK=0
+USE_NATIVE=0
 if [ "${1:-}" = "--stock" ]; then USE_STOCK=1; shift; fi
+if [ "${1:-}" = "--native" ]; then USE_NATIVE=1; shift; fi
 
 PYCALLOCS_BUILD="${PYCALLOCS_BUILD:-$ROOT/build}"
-STACKSCAN="${STACKSCAN:-$ROOT/contrib/stackscan}"
-LIBALLOCS="${LIBALLOCS:-$STACKSCAN/contrib/liballocs}"
+LIBALLOCS="${LIBALLOCS:-$ROOT/contrib/liballocs}"
 LUAPROXY_BUILD="$ROOT/vmextensions/lua/build"
 LUAHOST="${LUAHOST:-$LUAPROXY_BUILD/luahost}"
 
@@ -30,7 +34,9 @@ PYCALLOCS_TEST_LIBS="$PYCALLOCS_BUILD/tests/libs"
 LUA_TESTS_DIR="$ROOT/tests/lua"
 
 die() { echo "run_tests.sh: $*" >&2; exit 2; }
-[ -x "$LUAHOST" ] || die "luahost not built (expected $LUAHOST; run cmake first)"
+if [ $USE_NATIVE -eq 0 ] && [ $USE_STOCK -eq 0 ]; then
+    [ -x "$LUAHOST" ] || die "luahost not built (expected $LUAHOST; run cmake first)"
+fi
 [ -e "$BASETYPES_PROVIDER" ] || die "basetypes provider missing: $BASETYPES_PROVIDER"
 [ -d "$PYCALLOCS_TEST_LIBS" ] || die "fixture dir missing: $PYCALLOCS_TEST_LIBS"
 [ -d "$LUA_TESTS_DIR" ] || die "no Lua tests at $LUA_TESTS_DIR"
@@ -43,9 +49,56 @@ export PYCALLOCS_TEST_LIBS
 
 mkdir -p "$HERE/build/out"
 pass=0; fail=0
+
+# C-driver tests (native mode only): <name>/<name>.c is compiled
+# against the fork's liblua.a and run instead of a Lua script.
+if [ $USE_NATIVE -eq 1 ]; then
+    for cdrv in "$LUA_TESTS_DIR"/*/*.c; do
+        [ -e "$cdrv" ] || continue
+        name="$(basename "${cdrv%.c}")"
+        if [ $# -gt 0 ]; then
+            keep=""
+            for want in "$@"; do [ "$want" = "$name" ] && keep=1; done
+            [ -n "$keep" ] || continue
+        fi
+        bin="$HERE/build/out/$name"
+        out="$HERE/build/out/$name.stdout"
+        errf="$HERE/build/out/$name.stderr"
+        if ! cc -o "$bin" "$cdrv" -I"$ROOT/contrib/lua" \
+                "$ROOT/contrib/lua/liblua.a" -Wl,-E \
+                "$LIBALLOCS/lib/liballocs_preload.so" \
+                "$LIBALLOCS/lib/liballocs_dummyweaks.so" \
+                "$BASETYPES_PROVIDER" \
+                -lffi -lpthread -lm -ldl 2>"$errf"; then
+            echo "FAIL $name (compile; stderr: $errf)"
+            fail=$((fail+1)); continue
+        fi
+        "$bin" >"$out" 2>"$errf"
+        status=$?
+        expected="$(dirname "$cdrv")/$name.out"
+        if [ $status -ne 0 ]; then
+            echo "FAIL $name (exit $status; stderr: $errf)"
+            sed -n 1,5p "$errf" | sed 's/^/    /'
+            fail=$((fail+1))
+        elif [ -e "$expected" ] && ! cmp -s "$out" "$expected"; then
+            echo "FAIL $name (output mismatch)"
+            diff "$expected" "$out" | sed -n 1,10p | sed 's/^/    /'
+            fail=$((fail+1))
+        else
+            echo "PASS $name"
+            pass=$((pass+1))
+        fi
+    done
+fi
+
 for script in "$LUA_TESTS_DIR"/*/*.lua; do
     [ -e "$script" ] || die "no test scripts in $LUA_TESTS_DIR"
     name="$(basename "${script%.lua}")"
+    # native_* tests exercise forked-VM capabilities (native GC etc.)
+    # and only run in --native mode
+    case "$name" in
+        native_*) [ $USE_NATIVE -eq 1 ] || continue;;
+    esac
     # Only run tests explicitly listed as arguments, when any are given
     if [ $# -gt 0 ]; then
         keep=""
@@ -54,7 +107,9 @@ for script in "$LUA_TESTS_DIR"/*/*.lua; do
     fi
     out="$HERE/build/out/$name.stdout"
     errf="$HERE/build/out/$name.stderr"
-    if [ $USE_STOCK -eq 1 ]; then
+    if [ $USE_NATIVE -eq 1 ]; then
+        "$ROOT/contrib/lua/lua" "$script" >"$out" 2>"$errf"
+    elif [ $USE_STOCK -eq 1 ]; then
         LUA_CPATH="$LUAPROXY_BUILD/?.so" "$ROOT/contrib/lua/lua" "$script" >"$out" 2>"$errf"
     else
         "$LUAHOST" "$script" >"$out" 2>"$errf"

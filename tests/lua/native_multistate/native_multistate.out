@@ -1,0 +1,5 @@
+L1 sees:	7
+L2 sees:	7
+L1 sees after L2 write:	42
+L2 sees after L1 close:	42
+multistate done

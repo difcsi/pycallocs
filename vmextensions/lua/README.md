@@ -40,8 +40,8 @@ Products:
 - `luahost` — embedded dev/test driver (liblua.a + luaproxy statically), so
   no `package.cpath` setup is needed while developing.
 
-Location contract mirrors `setup.py`: `STACKSCAN`, `LIBALLOCS` (cache vars
-with environment fallback), `USE_ALASKA` for the (untested in v1) Alaska
+Location contract mirrors `setup.py`: `LIBALLOCS` (cache var with
+environment fallback), `USE_ALASKA` for the (untested in v1) Alaska
 configuration. The main pycallocs build must exist (`build/`): the basetypes
 provider meta-DSO and the allocscc-compiled test fixtures come from there.
 
