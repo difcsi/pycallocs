@@ -40,7 +40,9 @@ unavoidable in both. What *is* avoidable is hand-formatting C++ in `fprintf` /
 | codegen | `emit_type()` prints `struct`s + `extern "C"` wrappers | `emit_descriptor()` prints `C/M/T` records |
 | injector | — | [include/pyc_inject.hpp](../include/pyc_inject.hpp) → `pyc::inject_translators()` |
 
-The generated `.cpp` embeds `pycpputils.hpp` + `pyc_inject.hpp`, then:
+The generated `.cpp` embeds `pycpputils.hpp` + `pyc_inject.hpp` (the shared
+consteval machinery in `common/tokenject.hpp` is written alongside the TU, so
+`pyc_inject.hpp`'s `#include "tokenject.hpp"` resolves), then:
 
 ```cpp
 constexpr char __pyc_desc[] = R"PYCDESC(

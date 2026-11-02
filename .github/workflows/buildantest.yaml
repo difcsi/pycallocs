@@ -18,10 +18,10 @@ jobs:
       - name: Install dependencies
         run: sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y \
           $(cat .github/workflows/build-dependencies.txt)
-      # liballocs and alaska are submodules of stackscan and must be built there
-      # first; pycallocs consumes them as pre-built dependencies.
-      - name: Build contrib (cpython, linkpy)
-        run: make -C contrib -j $(nproc)
+      # The CMake build builds every dependency from source: cpython (when
+      # contrib/cpython/python is absent), linkpy (when linker/dist/audit.so is
+      # absent), and the liballocs / alaska submodules (BUILD_LIBALLOCS /
+      # BUILD_ALASKA, on by default).
       - name: Configure (CMake)
         run: cmake -S . -B build
       - name: Build

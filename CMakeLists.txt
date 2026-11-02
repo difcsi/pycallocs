@@ -5,20 +5,18 @@ project(pycallocs C)
 # pycallocs builds a CPython extension module (`allocs`) that provides an
 # invisible FFI on top of liballocs meta-information.
 #
-# liballocs and alaska are NOT submodules of pycallocs; they belong to the
-# stackscan submodule and are consumed here as pre-built dependencies. This
-# build locates them under contrib/stackscan/contrib/ and fails with build
-# instructions when they are missing or not built.
+# liballocs and alaska are submodules under contrib/. By default they are
+# built from source as part of this build (BUILD_LIBALLOCS / BUILD_ALASKA);
+# with those off they are consumed as pre-built dependencies, and the build
+# fails with build instructions when they are missing or not built.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-option(USE_ALLOCSCC "Use liballocs' allocscc compiler to generate uniqtype symbols" OFF)
-option(USE_ALASKA   "Use the alaska compiler"                                        ON)
-option(USE_ALASKA_CLANG
-    "Build the extension with alaska's bundled clang (no alaska transformation passes)"
-    ON)
+# NOTE: the VM extensions are always built with the system compiler; the
+# allocscc / alaska (yukon) toolchains apply only to test fixtures.
+option(USE_ALASKA   "Use the Alaska handle runtime (fixtures transformed; extension handle-aware)" ON)
 option(DEBUG        "Build the extension with -O0 and assertions enabled"            OFF)
 option(SPECIALISE_CONVERSION
     "Generate & dlopen specialised PyObject_to_T<T> translators for by-pointer PyObject->struct conversion (needs g++-16 at runtime)"
@@ -26,29 +24,45 @@ option(SPECIALISE_CONVERSION
 option(INJECT_CONVERSION
     "DRAFT: like SPECIALISE_CONVERSION, but synthesise the translators via P3294 token-sequence injection instead of string-templated codegen (needs a P3294-capable g++-16 at runtime; mutually exclusive with SPECIALISE_CONVERSION)"
     OFF)
-option(BUILD_STACKSCAN
-    "Build the stackscan submodule and its own submodules (alaska, liballocs) from source as part of this build, instead of consuming pre-built copies"
+option(BUILD_LIBALLOCS
+    "Build the liballocs submodule (contrib/liballocs) from source as part of this build, instead of consuming a pre-built copy"
+    ON)
+option(BUILD_ALASKA
+    "Build the alaska submodule (contrib/alaska, the preset matching ALASKA_OPT_TREE) from source as part of this build, instead of consuming a pre-built copy"
     ON)
 option(BUILD_BENCHMARKS
     "Build the benchmark fixtures + native baseline and expose the bench* run targets (benchmarks/)"
     OFF)
 
 # ---------------------------------------------------------------------------
-# Paths: stackscan and linkpy
-# (STACKSCAN_DIR must be set before add_subdirectory(contrib) so contrib can
-# read it; linkpy is first-party code living in linker/)
+# Paths: liballocs, alaska and linkpy
+# (LIBALLOCS_DIR / ALASKA_DIR / ALASKA_OPT_TREE must be set before
+# add_subdirectory(contrib) so contrib can build them; linkpy is first-party
+# code living in linker/)
 # ---------------------------------------------------------------------------
-set(STACKSCAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/stackscan"
-    CACHE PATH "stackscan submodule root")
+set(LIBALLOCS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/liballocs"
+    CACHE PATH "liballocs submodule root")
+set(ALASKA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/alaska"
+    CACHE PATH "alaska submodule root")
+# Which of alaska's opt/ install trees to compile and run against (and, with
+# BUILD_ALASKA, to build: tree alaska-<preset> comes from alaska's <preset>
+# CMake preset). The trees differ in enabled runtime features (see alaska's
+# CMakePresets.json):
+#   alaska-anchorage             compaction only (no refcount API)
+#   alaska-refcount-anchorage    + handle refcounts (no cycle collection)
+#   alaska-refcount-gc-anchorage + refcounts, stack scan and cycle collection
+#                                  (the Yukon configuration)
+set(ALASKA_OPT_TREE "alaska-anchorage"
+    CACHE STRING "alaska opt/ tree to use (e.g. alaska-refcount-gc-anchorage)")
 
 set(LINKPY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/linker"
     CACHE PATH "linkpy (linker) root")
 set(LINKPY_AUDIT_SO "${LINKPY_DIR}/dist/audit.so")
 
 # ---------------------------------------------------------------------------
-# Third-party builds: cpython and stackscan
-# contrib/CMakeLists.txt drives add_subdirectory for each subproject and
-# exports _STACKSCAN_DEP_TARGETS and _CPYTHON_DEP_TARGET to this scope.
+# Third-party builds: cpython, liballocs and alaska
+# contrib/CMakeLists.txt drives the build of each subproject and
+# exports _RUNTIME_DEP_TARGETS and _CPYTHON_DEP_TARGET to this scope.
 # ---------------------------------------------------------------------------
 add_subdirectory(contrib)
 
@@ -69,21 +83,18 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# liballocs (pre-built, owned by stackscan)
+# liballocs (contrib/liballocs submodule)
 # ---------------------------------------------------------------------------
-set(LIBALLOCS_DIR "${STACKSCAN_DIR}/contrib/liballocs"
-    CACHE PATH "liballocs source/build root (pre-built)")
-
 message(STATUS "Looking for liballocs in ${LIBALLOCS_DIR}")
 
-# When BUILD_STACKSCAN is on these artifacts are produced by the `liballocs`
+# When BUILD_LIBALLOCS is on these artifacts are produced by the `liballocs`
 # target during the build, so they legitimately don't exist at configure time.
-if(NOT BUILD_STACKSCAN)
+if(NOT BUILD_LIBALLOCS)
     if(NOT EXISTS "${LIBALLOCS_DIR}/config.mk")
         message(FATAL_ERROR
             "liballocs not configured at ${LIBALLOCS_DIR}.\n"
-            "Initialise stackscan's submodules and build it:\n"
-            "  git submodule update --init --recursive\n"
+            "Initialise its submodules and build it:\n"
+            "  git submodule update --init --recursive contrib/liballocs\n"
             "  cd ${LIBALLOCS_DIR} && ./configure --enable-lifetime-policies && make")
     endif()
 
@@ -108,24 +119,10 @@ set(LIBSYSTRAP_DIR    "${LIBALLOCS_DIR}/contrib/libsystrap")
 set(LIBALLOCSTOOL_DIR "${LIBALLOCS_DIR}/contrib/liballocstool")
 set(ALLOCSCC          "${LIBALLOCS_DIR}/tools/lang/c/bin/allocscc")
 
-if(USE_ALLOCSCC AND NOT BUILD_STACKSCAN AND NOT EXISTS "${ALLOCSCC}")
-    message(FATAL_ERROR
-        "allocscc not found at ${ALLOCSCC}. Build liballocs first or set -DUSE_ALLOCSCC=OFF")
-endif()
 
 # ---------------------------------------------------------------------------
-# alaska (pre-built, owned by stackscan)
+# alaska (contrib/alaska submodule; ALASKA_OPT_TREE is set with the paths above)
 # ---------------------------------------------------------------------------
-set(ALASKA_DIR "${STACKSCAN_DIR}/contrib/alaska"
-    CACHE PATH "alaska source/build root (pre-built)")
-# Which of alaska's opt/ install trees to compile and run against. The trees
-# differ in enabled runtime features (see alaska's CMakePresets.json):
-#   alaska-anchorage             compaction only (no refcount API)
-#   alaska-refcount-anchorage    + handle refcounts (no cycle collection)
-#   alaska-refcount-gc-anchorage + refcounts, stack scan and cycle collection
-#                                  (the Yukon configuration)
-set(ALASKA_OPT_TREE "alaska-anchorage"
-    CACHE STRING "alaska opt/ tree to use (e.g. alaska-refcount-gc-anchorage)")
 set(ALASKA "${ALASKA_DIR}/opt/${ALASKA_OPT_TREE}/bin/alaska"
     CACHE FILEPATH "alaska compiler wrapper")
 set(ALASKA_CLANG "${ALASKA_DIR}/opt/llvm/bin/clang"
@@ -133,10 +130,10 @@ set(ALASKA_CLANG "${ALASKA_DIR}/opt/llvm/bin/clang"
 
 if(USE_ALASKA)
     message(STATUS "Looking for alaska at ${ALASKA}")
-    if(NOT BUILD_STACKSCAN AND NOT EXISTS "${ALASKA}")
+    if(NOT BUILD_ALASKA AND NOT EXISTS "${ALASKA}")
         message(FATAL_ERROR
             "alaska not found at ${ALASKA}.\n"
-            "Build it inside stackscan first or set -DUSE_ALASKA=OFF.")
+            "Build it in ${ALASKA_DIR} first or set -DUSE_ALASKA=OFF.")
     endif()
 endif()
 
@@ -158,57 +155,39 @@ if(NOT _py_rc EQUAL 0)
 endif()
 
 # ---------------------------------------------------------------------------
-# Choose the compiler driver the EXTENSION is built with, and whether the Alaska
-# runtime is in use.
-#
-# The pycallocs extension is NEVER built with the Alaska handle transform: it
-# manipulates handles explicitly (ss_translate) and links the Alaska runtime, so
-# transforming it would double-translate and, in practice, cannot be linked as a
-# Python .so (the Alaska driver links an executable, leaving Py* symbols + main
-# undefined). The handle transform applies ONLY to the test fixtures (tests/),
-# whose malloc() must yield real handles.
-#
-#   USE_ALLOCSCC     -> liballocs' allocscc (emits uniqtype symbols), no transform
-#   USE_ALASKA_CLANG -> alaska's bundled clang, no transform passes (default)
-#   USE_ALASKA       -> Alaska runtime in use: still build the extension with
-#                       alaska's clang (NO transform), but define SS_HAVE_ALASKA,
-#                       link libalaska, and build the fixtures WITH the transform.
-#
-# _ALASKA_ENABLED drives the SS_HAVE_ALASKA macro (handle_query.h), libalaska
-# linking, and the transformed-fixture / relocate-test wiring.
+# Whether the Alaska runtime is in use. The handle transform (and the
+# allocscc/alaska toolchains generally) apply ONLY to the test fixtures
+# (tests/), whose malloc() must yield uniqtypes/real handles; the extension
+# manipulates handles explicitly (ss_translate) and is always built with the
+# system compiler. _ALASKA_ENABLED drives the SS_HAVE_ALASKA macro
+# (handle_query.h), libalaska linking, and the transformed-fixture /
+# relocate-test wiring.
 # ---------------------------------------------------------------------------
+# The VM extensions themselves are ALWAYS built with the system compiler --
+# never with liballocs' allocscc nor with alaska's clang (yukon). Those
+# toolchains apply only to the test fixtures (tests/), whose malloc() must
+# yield uniqtypes/handles. USE_ALASKA still makes the extension handle-AWARE
+# (SS_HAVE_ALASKA + libalaska link) without changing its compiler.
 set(_ALASKA_ENABLED FALSE)
-if(USE_ALLOCSCC)
-    set(EXT_CC "${ALLOCSCC}")
-elseif(USE_ALASKA OR USE_ALASKA_CLANG)
-    # Either way the extension uses alaska's clang WITHOUT the transform passes.
-    set(EXT_CC "${ALASKA_CLANG}")
-    if(USE_ALASKA)
-        set(_ALASKA_ENABLED TRUE)
-    endif()
-    if(NOT BUILD_STACKSCAN AND NOT EXISTS "${ALASKA_CLANG}")
+if(USE_ALASKA)
+    set(_ALASKA_ENABLED TRUE)
+    if(NOT BUILD_ALASKA AND NOT EXISTS "${ALASKA_CLANG}")
         message(FATAL_ERROR
-            "alaska's clang not found at ${ALASKA_CLANG}.\n"
-            "Build stackscan first or set -DUSE_ALASKA_CLANG=OFF -DUSE_ALASKA=OFF.")
+            "alaska's clang not found at ${ALASKA_CLANG} (needed to compile "
+            "alaska_translate.bc).\nBuild alaska first or set -DUSE_ALASKA=OFF.")
     endif()
-else()
-    set(EXT_CC "")  # default system compiler chosen by setuptools
 endif()
 
 # ---------------------------------------------------------------------------
 # Environment shared by the extension build and the test run.
 # ---------------------------------------------------------------------------
 set(_build_env
-    "STACKSCAN=${STACKSCAN_DIR}"
     "LIBALLOCS=${LIBALLOCS_DIR}"
     "LIBRUNT=${LIBRUNT_DIR}"
     "LIBSYSTRAP=${LIBSYSTRAP_DIR}"
     "LIBALLOCSTOOL=${LIBALLOCSTOOL_DIR}"
     "ALASKA=${ALASKA_DIR}"
 )
-if(USE_ALLOCSCC)
-    list(APPEND _build_env "USE_ALLOCSCC=yes")
-endif()
 if(DEBUG)
     list(APPEND _build_env "DEBUG=1")
 endif()
@@ -221,24 +200,21 @@ if(SPECIALISE_CONVERSION)
     list(APPEND _build_env "SPECIALISE_CONVERSION=1")
     message(STATUS "SPECIALISE_CONVERSION on: the extension #embed's pycpputils.hpp, "
                    "so it must be built with a C23 #embed-capable C compiler "
-                   "(gcc>=15 / clang>=19, e.g. -DUSE_ALASKA_CLANG=OFF -DUSE_ALASKA=OFF), "
+                   "(gcc>=15 / clang>=19), "
                    "and g++-16 must be on PATH at runtime for translator compilation.")
 endif()
 if(INJECT_CONVERSION)
     list(APPEND _build_env "INJECT_CONVERSION=1")
     message(STATUS "INJECT_CONVERSION on (DRAFT P3294 token-injection back end): the "
                    "extension #embed's pycpputils.hpp and pyc_inject.hpp, so it must be "
-                   "built with a C23 #embed-capable C compiler (gcc>=15 / clang>=19, e.g. "
-                   "-DUSE_ALASKA_CLANG=OFF -DUSE_ALASKA=OFF), and a P3294-capable g++-16 "
+                   "built with a C23 #embed-capable C compiler (gcc>=15 / clang>=19), "
+                   "and a P3294-capable g++-16 "
                    "must be on PATH at runtime for translator compilation.")
-endif()
-if(EXT_CC)
-    list(APPEND _build_env "CC=${EXT_CC}")
 endif()
 if(_ALASKA_ENABLED)
     # Alaska runtime in use: make the extension handle-aware (handle_query.h keys
     # off SS_HAVE_ALASKA) and link libalaska so ss_translate() resolves. The
-    # extension is still built WITHOUT the transform (CC = alaska's clang above).
+    # extension is still built WITHOUT the transform, by the system compiler.
     list(APPEND _build_env "SS_HAVE_ALASKA=1")
     list(APPEND _build_env "ALASKA_OPT_TREE=${ALASKA_OPT_TREE}")
 
@@ -274,8 +250,8 @@ add_custom_target(build-python ALL
 if(_CPYTHON_DEP_TARGET)
     add_dependencies(build-python ${_CPYTHON_DEP_TARGET})
 endif()
-if(_STACKSCAN_DEP_TARGETS)
-    add_dependencies(build-python ${_STACKSCAN_DEP_TARGETS})
+if(_RUNTIME_DEP_TARGETS)
+    add_dependencies(build-python ${_RUNTIME_DEP_TARGETS})
 endif()
 if(_ALASKA_ENABLED)
     add_dependencies(build-python alaska-translate-obj)
@@ -316,8 +292,8 @@ add_custom_command(
     VERBATIM)
 add_custom_target(basetypes-provider ALL DEPENDS "${BASETYPES_PROVIDER}")
 
-if(_STACKSCAN_DEP_TARGETS)
-    add_dependencies(basetypes-provider ${_STACKSCAN_DEP_TARGETS})
+if(_RUNTIME_DEP_TARGETS)
+    add_dependencies(basetypes-provider ${_RUNTIME_DEP_TARGETS})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -327,9 +303,9 @@ enable_testing()
 add_subdirectory(tests)
 
 # The test fixture libs are compiled with allocscc -> alaska, so they too need
-# the freshly-built liballocs/alaska when BUILD_STACKSCAN is on.
-if(_STACKSCAN_DEP_TARGETS AND TARGET test-libs)
-    add_dependencies(test-libs ${_STACKSCAN_DEP_TARGETS})
+# the freshly-built liballocs/alaska when BUILD_LIBALLOCS / BUILD_ALASKA are on.
+if(_RUNTIME_DEP_TARGETS AND TARGET test-libs)
+    add_dependencies(test-libs ${_RUNTIME_DEP_TARGETS})
 endif()
 
 # Convenience `check` target: build the extension, the base-types provider and
@@ -341,7 +317,7 @@ add_custom_target(check
 
 # ---------------------------------------------------------------------------
 # Benchmarks (opt-in). Added after tests so BASETYPES_PROVIDER / LINKPY_AUDIT_SO /
-# _LINKPY_BUILD_TARGET / _STACKSCAN_DEP_TARGETS are all in scope.
+# _LINKPY_BUILD_TARGET / _RUNTIME_DEP_TARGETS are all in scope.
 # ---------------------------------------------------------------------------
 if(BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)

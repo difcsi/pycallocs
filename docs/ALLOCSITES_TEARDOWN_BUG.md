@@ -5,8 +5,8 @@ While bringing up the pycallocs test fixtures' meta-DSOs, the liballocstool
 leaving `*-allocsites.c.err` behind and failing the whole meta build. This
 note records what it actually was, since the obvious hypotheses were wrong.
 
-All patched files live in the `stackscan` submodule:
-`contrib/stackscan/contrib/liballocs/...`.
+All patched files live in the `liballocs` submodule:
+`contrib/liballocs/...`.
 
 ## TL;DR
 

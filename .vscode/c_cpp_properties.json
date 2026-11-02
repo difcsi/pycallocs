@@ -3,17 +3,18 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/include/**",
-                "${workspaceFolder}/contrib/**/include/**",
-                "/usr/include/python3.13",
-                "${workspaceFolder}/contrib/stackscan/contrib/liballocs/src"
+                "${workspaceFolder}/vmextensions/**",
+                "${workspaceFolder}/linker/**",
+                "${workspaceFolder}/contrib/cpython/Include/**",
+                "${workspaceFolder}/contrib/lua/**",
+                "${workspaceFolder}/contrib/liballocs/**/include"
             ],
             "defines": [],
-            "compilerPath": "/usr/bin/gcc",
-            "cStandard": "c11",
-            "cppStandard": "c++11",
+            "compilerPath": "/usr/bin/gcc-16",
+            "cStandard": "c23",
+            "cppStandard": "c++26",
             "intelliSenseMode": "linux-gcc-x64",
-            "configurationProvider": "ms-vscode.makefile-tools"
+            "configurationProvider": "ms-vscode.cmake-tools"
         }
     ],
     "version": 4

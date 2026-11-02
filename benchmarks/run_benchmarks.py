@@ -50,7 +50,7 @@ COLUMN_ORDER = ["native", "ctypes", "cffi", "pycallocs", "pure"]
 
 # --------------------------------------------------------------------------- env
 def discover_paths(build_dir):
-    la = os.path.join(ROOT, "contrib", "stackscan", "contrib", "liballocs")
+    la = os.path.join(ROOT, "contrib", "liballocs")
     return {
         "liballocs_lib": os.path.join(la, "lib"),
         "preload": os.path.join(la, "lib", "liballocs_preload.so"),

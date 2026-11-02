@@ -9,7 +9,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-LA="$ROOT/contrib/stackscan/contrib/liballocs"
+LA="$ROOT/contrib/liballocs"
 ALLOCSCC="$LA/tools/lang/c/bin/allocscc"
 LIBDIR="$HERE/libs/bench"
 PY="${PYTHON:-python3}"

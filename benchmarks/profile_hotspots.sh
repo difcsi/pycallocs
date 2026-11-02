@@ -15,7 +15,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-LA="$ROOT/contrib/stackscan/contrib/liballocs"
+LA="$ROOT/contrib/liballocs"
 BUILD="${PYCALLOCS_BUILD_DIR:-$ROOT/build}"
 
 export LD_PRELOAD="$LA/lib/liballocs_preload.so:$BUILD/basetypes/libbasetypes_provider.so"

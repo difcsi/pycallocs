@@ -2,6 +2,13 @@
 
 _Last updated: 2026-06-08_
 
+> **Superseded (2026-10-23):** the stackscan indirection described below is
+> gone. liballocs and alaska are now direct submodules of pycallocs
+> (`contrib/liballocs`, `contrib/alaska`), built by `contrib/CMakeLists.txt`
+> under `BUILD_LIBALLOCS` / `BUILD_ALASKA` (which replace `BUILD_STACKSCAN`);
+> the `handle_query.h` glue now lives in `vmextensions/common/`. Paths below
+> are historical.
+
 This document records the state of the autotools→CMake migration, the submodule
 relocation, and the one **open runtime blocker** so the work can be resumed
 cleanly.

@@ -1,6 +1,17 @@
 [submodule "contrib/cpython"]
 	path = contrib/cpython
 	url = git@github.com:difcsi/cpython.git
-[submodule "contrib/stackscan"]
-	path = contrib/stackscan
-	url = git@github.com:difcsi/stackscan.git
+[submodule "contrib/lua"]
+	path = contrib/lua
+	url = git@github.com:difcsi/lua.git
+[submodule "contrib/v8"]
+	path = contrib/v8
+	url = git@github.com:difcsi/v8.git
+[submodule "contrib/liballocs"]
+	path = contrib/liballocs
+	url = git@github.com:difcsi/liballocs.git
+	branch = lp2
+[submodule "contrib/alaska"]
+	path = contrib/alaska
+	url = git@github.com:difcsi/alaska.git
+	branch = main-rc

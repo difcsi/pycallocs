@@ -59,9 +59,9 @@ add_custom_target(bench-libs DEPENDS
     "${BENCH_ALLOCS_SO}" "${BENCH_PLAIN_SO}" "${NATIVE_SO}")
 
 # The allocscc fixture needs the freshly-built liballocs/alaska when building them
-# from source (BUILD_STACKSCAN=ON).
-if(_STACKSCAN_DEP_TARGETS)
-    add_dependencies(bench-libs ${_STACKSCAN_DEP_TARGETS})
+# from source (BUILD_LIBALLOCS / BUILD_ALASKA on).
+if(_RUNTIME_DEP_TARGETS)
+    add_dependencies(bench-libs ${_RUNTIME_DEP_TARGETS})
 endif()
 
 # ---------------------------------------------------------------------------
