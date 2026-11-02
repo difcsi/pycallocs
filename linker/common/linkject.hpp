@@ -22,17 +22,9 @@
 // is only discovered at audit time -- but the trampoline *shape* now lives here
 // as token sequences rather than as std::format strings inside the auditor.
 //
-// =========================================================================
-//  P3294 primitives used (syntax per P3294R2 / P3289 consteval blocks)
-// =========================================================================
-//   ^^{ tokens }                a token-sequence literal -> std::meta::info
-//   \tokens(e)                  splice another token sequence e
-//   \id(sv)                     form an identifier token from a string constant
-//   \(e)                        interpolate a string/scalar constant as a token
-//                               (a string constant -> a string-literal token)
-//   consteval { ... }           a consteval block: an injection context
-//   std::meta::queue_injection  queue tokens for injection into the enclosing
-//                               (namespace) context
+// The consteval string helpers, the type-spelling -> token-sequence mapping and
+// the struct-definition injection are shared with the vmextensions injection
+// back end (pyc_inject.hpp); they live in the project-wide common/tokenject.hpp.
 //
 // NOTE: no P3294 compiler exists yet; this is an unverified design sketch and
 // the exact spellings are expected to change before the proposal lands.
@@ -42,10 +34,16 @@
 #include <string_view>
 #include <vector>
 
+#include "tokenject.hpp"
+
 // pycpputils.hpp (run_function / run_function_void / pack_args / arg_to_PyObject)
 // is included by the linkstub template ahead of this header.
 
 namespace linkpy {
+
+using tokenject::Field;
+using tokenject::split;
+using tokenject::type_tokens;
 
 // -------------------------------------------------------------------------
 // Descriptor model
@@ -60,26 +58,11 @@ namespace linkpy {
 // Structs are emitted dependencies-first (matching load_dwarf_structs order), so
 // injecting them in descriptor order satisfies C++'s define-before-use.
 
-struct Field { std::string_view type; std::string_view name; };
 struct Struct { std::string_view name; std::vector<Field> fields; };
 struct Func {
     std::string_view module, name, ret;
     std::vector<Field> params;
 };
-
-consteval std::vector<std::string_view> split(std::string_view s, char d)
-{
-    std::vector<std::string_view> out;
-    std::size_t start = 0;
-    for (std::size_t i = 0; i <= s.size(); ++i)
-        if (i == s.size() || s[i] == d)
-        {
-            if (i > start) out.push_back(s.substr(start, i - start));
-            else if (i == start) out.push_back({}); // preserve empties for arity
-            start = i + 1;
-        }
-    return out;
-}
 
 // "int:x;double:y" -> [{int,x},{double,y}]; "" -> []. Tolerates a trailing ';'.
 consteval std::vector<Field> parse_fields(std::string_view list)
@@ -93,66 +76,6 @@ consteval std::vector<Field> parse_fields(std::string_view list)
         fs.push_back(Field{ e.substr(0, c), e.substr(c + 1) });
     }
     return fs;
-}
-
-consteval std::size_t to_size(std::string_view s)
-{
-    std::size_t v = 0;
-    for (char ch : s) v = v * 10 + (ch - '0');
-    return v;
-}
-
-// -------------------------------------------------------------------------
-// Type spelling -> token sequence
-// -------------------------------------------------------------------------
-// A C type spelling is a sequence of whitespace-separated words plus '*'s, e.g.
-// "const char *", "struct Point", "int". Keywords are NOT identifiers, so \id
-// cannot spell them -- they are emitted as literal keyword tokens; '*' as a
-// literal punctuator; everything else (a struct tag or typedef name) via \id.
-consteval std::meta::info word_token(std::string_view w)
-{
-    // The keywords that can appear in the C type spellings DWARF hands back here.
-    if (w == "void")     return ^^{ void };
-    if (w == "bool")     return ^^{ bool };
-    if (w == "char")     return ^^{ char };
-    if (w == "short")    return ^^{ short };
-    if (w == "int")      return ^^{ int };
-    if (w == "long")     return ^^{ long };
-    if (w == "unsigned") return ^^{ unsigned };
-    if (w == "signed")   return ^^{ signed };
-    if (w == "float")    return ^^{ float };
-    if (w == "double")   return ^^{ double };
-    if (w == "const")    return ^^{ const };
-    if (w == "volatile") return ^^{ volatile };
-    if (w == "struct")   return ^^{ struct };
-    if (w == "union")    return ^^{ union };
-    if (w == "enum")     return ^^{ enum };
-    if (w == "*")        return ^^{ * };
-    return ^^{ \id(w) };                   // a tag/typedef name
-}
-
-// Split a spelling into words, treating each '*' as its own word, and fold them
-// into one token sequence.
-consteval std::meta::info type_tokens(std::string_view spelling)
-{
-    std::meta::info ts = ^^{ };
-    std::size_t i = 0, n = spelling.size();
-    while (i < n)
-    {
-        while (i < n && (spelling[i] == ' ' || spelling[i] == '\t')) ++i;
-        if (i >= n) break;
-        if (spelling[i] == '*')
-        {
-            ts = ^^{ \tokens(ts) * };
-            ++i;
-            continue;
-        }
-        std::size_t start = i;
-        while (i < n && spelling[i] != ' ' && spelling[i] != '\t' &&
-                        spelling[i] != '*') ++i;
-        ts = ^^{ \tokens(ts) \tokens(word_token(spelling.substr(start, i - start))) };
-    }
-    return ts;
 }
 
 // -------------------------------------------------------------------------
@@ -169,10 +92,7 @@ consteval void inject_stubs(std::string_view desc)
         if (f[0] == "S")
         {
             Struct s{ f[1], parse_fields(f.size() > 2 ? f[2] : std::string_view{}) };
-            std::meta::info body = ^^{ };
-            for (const Field &fld : s.fields)
-                body = ^^{ \tokens(body) \tokens(type_tokens(fld.type)) \id(fld.name); };
-            std::meta::queue_injection(^^{ struct \id(s.name) { \tokens(body) }; });
+            tokenject::inject_struct(s.name, s.fields);
             continue;
         }
 
@@ -204,10 +124,13 @@ consteval void inject_stubs(std::string_view desc)
             // run_function_void("mod","name",argc, p0, ...)  for void returns,
             // else  return run_function<RET>("mod","name",argc, p0, ...).
             // \(fn.module) / \(fn.name) interpolate the names as string literals;
-            // \(argc) the arity as an integer literal.
+            // \(argc) the arity as an integer literal. Qualified linkpy::py:: to
+            // match the namespaced marshaller; a Lua variant of this draft back
+            // end would need the qualifier parameterized like gen_code's
+            // CALLEE_NS (this path is Python-only today).
             std::meta::info call = (fn.ret == "void")
-                ? ^^{ run_function_void(\(fn.module), \(fn.name), \(argc) \tokens(fwd)); }
-                : ^^{ return run_function<\tokens(type_tokens(fn.ret))>(
+                ? ^^{ linkpy::py::run_function_void(\(fn.module), \(fn.name), \(argc) \tokens(fwd)); }
+                : ^^{ return linkpy::py::run_function<\tokens(type_tokens(fn.ret))>(
                           \(fn.module), \(fn.name), \(argc) \tokens(fwd)); };
 
             std::meta::queue_injection(^^{

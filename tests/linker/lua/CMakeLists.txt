@@ -20,3 +20,16 @@ add_linkpy_test(struct_arg LANG lua)
 add_linkpy_test(generated_header LANG lua GENERATE_HEADERS)
 
 add_linkpy_typecheck_tests(LANG lua)
+
+# ---------------------------------------------------------------------------
+# By-reference (ptr_arg) test: bump(struct Point *) -- Lua adds 100 to p.x
+# through a luaproxy proxy; main asserts the write is visible back in C. Needs
+# the liballocs runtime + luaproxy.so, so OFF by default (mirror of the Python
+# byref test; enable both with -DLINKPY_BYREF_TESTS=ON).
+# ---------------------------------------------------------------------------
+if(LINKPY_BYREF_TESTS)
+    add_linkpy_byref_test(ptr_arg LANG lua)
+else()
+    message(STATUS "linkpy: Lua by-reference (ptr_arg) test disabled; "
+                   "-DLINKPY_BYREF_TESTS=ON (with liballocs paths) to enable")
+endif()

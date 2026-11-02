@@ -101,6 +101,21 @@ bool is_stub_decl_file(const char *decl_file)
            s.find(".lua.") != std::string::npos;
 }
 
+// The language marker is_stub_decl_file matched: "py", "lua", or "" when the
+// decl-file is not one of ours. Kept on FunLinkEntry::lang so the auditor can
+// verify the stub library is single-language (and pick the callee marshaller).
+std::string lang_from_decl_file(const char *decl_file)
+{
+    if (decl_file == nullptr)
+        return "";
+    std::string s(decl_file);
+    if (s.find(".py.") != std::string::npos)
+        return "py";
+    if (s.find(".lua.") != std::string::npos)
+        return "lua";
+    return "";
+}
+
 // If `owner`'s DW_AT_type denotes a struct passed/returned by value (peeling
 // any const/volatile/typedef wrappers, but NOT pointers — those only need a
 // forward declaration), copy that structure DIE into `out` and return true.
@@ -136,6 +151,47 @@ bool struct_type_of(Dwarf_Die *owner, Dwarf_Die *out)
     }
 }
 
+// The spelling of a struct member. A fixed-size array member is `elem name[N]`
+// in C, bounds after the name, so the dimensions come back separately for the
+// emitter to append to the field name; any other member gets its ordinary
+// type spelling and an empty suffix.
+static void member_type_and_dims(Dwarf_Die *member, std::string &type, std::string &dims)
+{
+    dims.clear();
+    Dwarf_Attribute attr;
+    Dwarf_Die t;
+    if (dwarf_attr(member, DW_AT_type, &attr) == nullptr
+        || dwarf_formref_die(&attr, &t) == nullptr
+        || dwarf_tag(&t) != DW_TAG_array_type)
+    {
+        type = referenced_type(member);
+        return;
+    }
+    type = referenced_type(&t); // the element type
+    Dwarf_Die sub;
+    if (dwarf_child(&t, &sub) != 0)
+        return;
+    do
+    {
+        if (dwarf_tag(&sub) != DW_TAG_subrange_type)
+            continue;
+        Dwarf_Attribute a;
+        Dwarf_Word n = 0;
+        Dwarf_Sword sn = 0;
+        if (dwarf_attr_integrate(&sub, DW_AT_count, &a) != nullptr
+            && dwarf_formudata(&a, &n) == 0)
+            dims += "[" + std::to_string(n) + "]";
+        else if (dwarf_attr_integrate(&sub, DW_AT_upper_bound, &a) != nullptr
+                 && dwarf_formudata(&a, &n) == 0)
+            dims += "[" + std::to_string(n + 1) + "]";
+        else if (dwarf_attr_integrate(&sub, DW_AT_upper_bound, &a) != nullptr
+                 && dwarf_formsdata(&a, &sn) == 0)
+            dims += "[" + std::to_string(sn + 1) + "]";
+        else
+            dims += "[]";
+    } while (dwarf_siblingof(&sub, &sub) == 0);
+}
+
 // Append the definition of `struct_die` (and any by-value struct it contains,
 // emitted first so it is defined before use) to `out`, skipping names already
 // in `seen`. `seen` is marked before recursing so a malformed cycle terminates.
@@ -159,7 +215,9 @@ void collect_struct(Dwarf_Die *struct_die, std::vector<StructDef> &out,
             if (dwarf_tag(&member) != DW_TAG_member)
                 continue;
             const char *mname = dwarf_diename(&member);
-            def.fields.emplace_back(referenced_type(&member), mname ? mname : "");
+            std::string mtype, mdims;
+            member_type_and_dims(&member, mtype, mdims);
+            def.fields.emplace_back(mtype, std::string(mname ? mname : "") + mdims);
             Dwarf_Die ms;
             if (struct_type_of(&member, &ms))
                 nested.push_back(ms);
@@ -195,7 +253,9 @@ FunLinkEntry entry_from_subprogram(Dwarf_Die *die, const char *decl_file)
         } while (dwarf_siblingof(&child, &child) == 0);
     }
 
-    return FunLinkEntry(module, fname ? fname : "", return_type, params);
+    FunLinkEntry entry(module, fname ? fname : "", return_type, params);
+    entry.lang = lang_from_decl_file(decl_file);
+    return entry;
 }
 
 } // namespace

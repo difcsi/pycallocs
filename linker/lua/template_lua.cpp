@@ -5,7 +5,6 @@
 // trampolines and manages the linkstub's Lua VM. A constructor creates the
 // shared lua_State when liblinkstub loads; a destructor closes it on unload.
 
-#define DEBUG
 
 #ifdef DEBUG
 #include <iostream>
@@ -13,7 +12,7 @@
 
 __attribute__((constructor)) void init_vms()
 {
-    init_lua();
+    linkpy::lua::init_lua();
 
 #ifdef DEBUG
     std::cout << "LuaVM Initialized from linkstub" << std::endl;
@@ -22,7 +21,7 @@ __attribute__((constructor)) void init_vms()
 
 __attribute__((destructor)) void cleanup_vms()
 {
-    close_lua();
+    linkpy::lua::close_lua();
 #ifdef DEBUG
     std::cout << "LuaVM Cleaned Up from linkstub" << std::endl;
 #endif

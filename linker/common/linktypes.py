@@ -32,7 +32,8 @@ import sys
 # --- C type model ---------------------------------------------------------
 
 # C scalar spellings, by neutral kind. Mirrors the scalars handled by
-# PyObject_to_T / T_to_PyObject (include/pycpputils.hpp) and luacpputils.hpp.
+# PyObject_to_T / T_to_PyObject (common/pycpputils.hpp, at the repo root) and
+# luacpputils.hpp.
 # Width-variant integers all cross as one scripting integer; CPython/Lua floats
 # are C doubles.
 _INT_SPELLINGS = {

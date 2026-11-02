@@ -22,16 +22,11 @@
 // now lives here as token sequences rather than as printf format strings spread
 // through the C driver. The driver's job collapses to "serialise the uniqtype".
 //
-// =========================================================================
-//  P3294 primitives used (syntax per P3294R2 / P3289 consteval blocks)
-// =========================================================================
-//   ^^{ tokens }                a token-sequence literal -> std::meta::info
-//   \tokens(e)                  splice another token sequence e into ^^{...}
-//   \id(sv)                     form an identifier token from a string constant
-//   \(e)                        interpolate a scalar/string constant as a token
-//   consteval { ... }           a consteval block: an injection context
-//   std::meta::queue_injection  queue a token sequence for injection into the
-//                               enclosing context (here: namespace scope)
+// The consteval string helpers, the type-spelling -> token-sequence mapping and
+// the struct-definition injection are shared with the linker's injection back
+// end (linkject.hpp); they live in the project-wide common/tokenject.hpp, which
+// the driver (src/specialise_inject.c) #embed's and writes next to the
+// generated TU so this header's `#include "tokenject.hpp"` resolves at runtime.
 //
 // NOTE: there is no P3294 compiler yet; this is an unverified design sketch.
 // Token-sequence/interpolation spellings are expected to shift before the
@@ -45,10 +40,15 @@
 #include <utility>
 #include <stdexcept>
 
+#include "tokenject.hpp"
+
 // pycpputils.hpp (which defines PyObject_to_T<T> / T_to_PyObject<T>) is expected
 // to have been included/embedded ahead of this header in the generated TU.
 
 namespace pyc {
+
+using tokenject::to_size;
+using tokenject::words_of;
 
 // -------------------------------------------------------------------------
 // Descriptor model
@@ -65,32 +65,8 @@ namespace pyc {
 // emits types PyObject_to_T<T> actually specialises for; anything else makes it
 // fall back to the generic converter and this path is never reached.
 
-struct Member { std::string_view type; std::string_view name; };
+using Member = tokenject::Field;
 struct Composite { std::string_view name; std::vector<Member> members; };
-
-// Split `desc` into whitespace-separated words, in order. constexpr-friendly.
-consteval std::vector<std::string_view> words_of(std::string_view desc)
-{
-    std::vector<std::string_view> words;
-    std::size_t i = 0, n = desc.size();
-    while (i < n)
-    {
-        while (i < n && (desc[i] == ' ' || desc[i] == '\n' ||
-                         desc[i] == '\t' || desc[i] == '\r')) ++i;
-        std::size_t start = i;
-        while (i < n && desc[i] != ' ' && desc[i] != '\n' &&
-                        desc[i] != '\t' && desc[i] != '\r') ++i;
-        if (i > start) words.push_back(desc.substr(start, i - start));
-    }
-    return words;
-}
-
-consteval std::size_t to_size(std::string_view s)
-{
-    std::size_t v = 0;
-    for (char c : s) v = v * 10 + (c - '0');
-    return v;
-}
 
 // Parse the descriptor into its composites (in emission/definition order) and
 // set `top` to the requested top-level type name.
@@ -125,42 +101,24 @@ consteval std::vector<Composite> parse(std::string_view desc, std::string_view &
 }
 
 // -------------------------------------------------------------------------
-// Token-sequence helpers
-// -------------------------------------------------------------------------
-// A single-identifier type spelling -> a one-token token sequence. The scalar
-// keywords are NOT identifiers, so \id() cannot spell them; they are emitted as
-// literal keyword tokens. Everything else is a composite's synthesised name and
-// is a genuine identifier, so \id() is correct.
-consteval std::meta::info type_token(std::string_view spelling)
-{
-    if (spelling == "int")    return ^^{ int };
-    if (spelling == "float")  return ^^{ float };
-    if (spelling == "double") return ^^{ double };
-    if (spelling == "bool")   return ^^{ bool };
-    return ^^{ \id(spelling) };           // a composite name (__pyc_TN)
-}
-
-// -------------------------------------------------------------------------
 // The injection
 // -------------------------------------------------------------------------
 // Called from the generated TU's namespace-scope `consteval { ... }` block.
 // Injects, in order:
 //   * one `struct <name> { ... };` per composite (deps precede users), and
 //   * the two extern "C" wrappers naming the top type by splice.
+// Every member type is a single identifier (a scalar keyword or a __pyc_TN
+// composite name), for which tokenject::type_tokens degenerates to the single
+// keyword/identifier token -- exactly the spelling the old local helper
+// produced.
 consteval void inject_translators(std::string_view desc)
 {
     std::string_view top;
     std::vector<Composite> comps = parse(desc, top);
 
-    // 1. Inject each composite definition. Members accumulate into a token
-    //    sequence that is then spliced into the struct body.
+    // 1. Inject each composite definition (deps precede users).
     for (const Composite &c : comps)
-    {
-        std::meta::info body = ^^{ };
-        for (const Member &m : c.members)
-            body = ^^{ \tokens(body) \tokens(type_token(m.type)) \id(m.name); };
-        std::meta::queue_injection(^^{ struct \id(c.name) { \tokens(body) }; });
-    }
+        tokenject::inject_struct(c.name, c.members);
 
     // 2. Inject the two extern "C" entry points dlsym() will look up. These are
     //    byte-for-byte the wrappers src/specialise.c prints, except the type is
@@ -173,7 +131,7 @@ consteval void inject_translators(std::string_view desc)
         {
             try
             {
-                *static_cast<\id(top) *>(dest) = PyObject_to_T<\id(top)>(src);
+                *static_cast<\id(top) *>(dest) = linkpy::py::PyObject_to_T<\id(top)>(src);
                 return 0;
             }
             catch (const std::exception &e)
@@ -184,7 +142,7 @@ consteval void inject_translators(std::string_view desc)
         }
         extern "C" PyObject *__pyc_fromvalue(void *src)
         {
-            try { return T_to_PyObject<\id(top)>(*static_cast<\id(top) *>(src)); }
+            try { return linkpy::py::T_to_PyObject<\id(top)>(*static_cast<\id(top) *>(src)); }
             catch (const std::exception &e)
             {
                 if (!PyErr_Occurred()) PyErr_SetString(PyExc_TypeError, e.what());

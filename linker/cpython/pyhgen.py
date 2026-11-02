@@ -36,7 +36,8 @@ import linktypes
 from linktypes import UnsupportedType
 
 # Python annotation -> C type, for the scalars marshalled by PyObject_to_T /
-# T_to_PyObject in include/pycpputils.hpp. CPython floats are C doubles. ``str``
+# T_to_PyObject in the repo-root common/pycpputils.hpp. CPython floats are C
+# doubles. ``str``
 # crosses as a C string; ``None`` is only meaningful as a (void) return.
 SCALAR_C_TYPES = {
     "int": "int",

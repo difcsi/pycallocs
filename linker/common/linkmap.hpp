@@ -10,6 +10,12 @@ struct FunLinkEntry
     std::string name;
     std::vector<std::pair<std::string, std::string>> params;
 
+    // Callee language of the stub this entry came from: "py", "lua", or ""
+    // (unknown, e.g. an entry parsed from the colon form). Populated by the
+    // DWARF path from the decl-file marker (.py. / .lua.). In-memory only; it
+    // does not ride along in to_string()'s interchange format.
+    std::string lang;
+
     bool is_loaded;
     FunLinkEntry(const std::string &module, const std::string &name, const std::string &return_type,
                  const std::vector<std::pair<std::string, std::string>> &params)
@@ -38,6 +44,19 @@ struct FunLinkEntry
 };
 
 const FunLinkEntry* find_function(const std::vector<FunLinkEntry> &linkmap, const std::string &name);
+
+// True if the single (type, name) parameter is a pointer that escapes into the
+// VM (i.e. anything but a single-level char* string). The per-parameter form
+// of has_escaping_pointer(), shared with the host-binding codegen.
+bool param_escapes(const std::pair<std::string, std::string> &p);
+
+// Cross-language (VM-host) guard: a signature may cross a VM->VM boundary if
+// every value crosses by value -- a single-level char* parameter crosses as a
+// string -- or, when allow_byref_params is set (LINKPY_CROSS_BYREF), if its
+// pointer parameters cross as proxy handoffs. A pointer return -- char*
+// included -- is always rejected: no by-value C lifetime to hand over. Returns
+// "" when the entry may cross, else a reason naming the offending part.
+std::string cross_reject_reason(const FunLinkEntry &e, bool allow_byref_params);
 
 // Yukon heap-promotion hints. escaping_functions() returns the names of the
 // entries whose pointer arguments escape into Python (sorted, de-duplicated);

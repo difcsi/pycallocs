@@ -5,8 +5,6 @@
 #include <format>
 #include <iterator>
 
-#define DEBUG
-
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -72,7 +70,7 @@ std::string FunLinkEntry::params_args() const
 // both fields, and derive the base type by stripping stars/qualifiers from the
 // type field. A single-level char pointer is a Python str (by value), not an
 // escaping proxy pointer.
-static bool param_escapes(const std::pair<std::string, std::string> &p)
+bool param_escapes(const std::pair<std::string, std::string> &p)
 {
     int stars = static_cast<int>(std::count(p.first.begin(), p.first.end(), '*') +
                                  std::count(p.second.begin(), p.second.end(), '*'));
@@ -100,6 +98,18 @@ static bool param_escapes(const std::pair<std::string, std::string> &p)
 bool FunLinkEntry::has_escaping_pointer() const
 {
     return std::any_of(params.begin(), params.end(), param_escapes);
+}
+
+std::string cross_reject_reason(const FunLinkEntry &e, bool allow_byref_params)
+{
+    if (!allow_byref_params)
+        for (const auto &p : e.params)
+            if (param_escapes(p))
+                return "parameter '" + p.second + "' of type '" + p.first +
+                       "' is passed by reference";
+    if (e.return_type.find('*') != std::string::npos)
+        return "return type '" + e.return_type + "' is a pointer";
+    return "";
 }
 
 std::set<std::string> escaping_functions(const std::vector<FunLinkEntry> &entries)

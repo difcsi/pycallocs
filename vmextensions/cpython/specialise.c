@@ -27,7 +27,8 @@
 #define PYCALLOCS_TRANSLATE_CXX "g++-16"
 #endif
 
-// Embed linkpy's pycpputils.hpp (which defines PyObject_to_T) into the extension
+// Embed the shared common/pycpputils.hpp (which defines PyObject_to_T, also
+// used by linkpy's linker/ tree) into the extension
 // at build time, so each generated translator is self-contained: the client
 // needs no copy of the header on disk at runtime. This requires a C23
 // #embed-capable C compiler (gcc >= 15 / clang >= 19) for the
@@ -269,14 +270,14 @@ static int build_translators(const struct uniqtype *t, struct translators *out)
         // converts it into a Python error.
         fprintf(sf,
             "extern \"C\" int __pyc_translate(PyObject *src, void *dest) {\n"
-            "    try { *static_cast<%s*>(dest) = PyObject_to_T<%s>(src); return 0; }\n"
+            "    try { *static_cast<%s*>(dest) = linkpy::py::PyObject_to_T<%s>(src); return 0; }\n"
             "    catch (const std::exception &e) {\n"
             "        if (!PyErr_Occurred()) PyErr_SetString(PyExc_TypeError, e.what());\n"
             "        return -1;\n"
             "    }\n"
             "}\n"
             "extern \"C\" PyObject *__pyc_fromvalue(void *src) {\n"
-            "    try { return T_to_PyObject<%s>(*static_cast<%s*>(src)); }\n"
+            "    try { return linkpy::py::T_to_PyObject<%s>(*static_cast<%s*>(src)); }\n"
             "    catch (const std::exception &e) {\n"
             "        if (!PyErr_Occurred()) PyErr_SetString(PyExc_TypeError, e.what());\n"
             "        return nullptr;\n"

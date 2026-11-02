@@ -13,16 +13,18 @@
 #   src/*.<lang>         scripting sources
 #   src/main.c           driver that links the generated init library
 #
-# Python additionally carries the by-reference (ptr_arg) and heap-hints tests,
-# which exercise pointer arguments escaping into the VM via a pycallocs proxy --
-# a Python/liballocs-only path with no Lua analogue (Lua passes pointers as opaque
-# userdata), so they live under tests/linker/cpython/ only.
+# Both languages carry a by-reference (ptr_arg) test -- pointer arguments
+# escape into the VM via a proxy (pycallocs for Python, luaproxy for Lua) and
+# writes propagate back to C; they need the liballocs runtime and are gated
+# behind LINKPY_BYREF_TESTS. The heap-hints tests remain Python-only.
 #
 # Paths are anchored on LINKPY_ROOT / LINKPY_TESTS_DIR (set by the includer),
 # not CMAKE_SOURCE_DIR: the latter points at the superproject when the linker
 # tree is consumed via add_subdirectory.
 # ---------------------------------------------------------------------------
 
+# Compiled linkstubs are cached by content hash (linkstub_cache.cpp); the tests
+# keep theirs in the build tree rather than the user's ~/.cache.
 set(LINKPY_TEMPLATE "${LINKPY_ROOT}/cpython/template.cpp")
 set(LINKPY_LUA_TEMPLATE "${LINKPY_ROOT}/lua/template_lua.cpp")
 
@@ -160,12 +162,12 @@ function(add_linkpy_test name)
     # (where it wrote linkstub.cpp) before running this, so the output lands there.
     set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${marshal_src} \
--I${LINKPY_ROOT}/common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
+-I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
 
     add_test(NAME ${test_name} COMMAND ${test_name}_main)
     set_tests_properties(${test_name} PROPERTIES
         WORKING_DIRECTORY "${work_dir}"
-        ENVIRONMENT "LD_AUDIT=$<TARGET_FILE:${audit_lib}>;TEMPLATE_PATH=${template};LINKSTUB_BUILD_CMD=${linkstub_cmd};INIT_DWARF_PATH=$<TARGET_FILE:${test_name}_init>")
+        ENVIRONMENT "LINKPY_CACHE_DIR=${CMAKE_BINARY_DIR}/linkpy-cache;LD_AUDIT=$<TARGET_FILE:${audit_lib}>;TEMPLATE_PATH=${template};LINKSTUB_BUILD_CMD=${linkstub_cmd};INIT_DWARF_PATH=$<TARGET_FILE:${test_name}_init>")
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -223,7 +225,7 @@ endfunction()
 option(LINKPY_BYREF_TESTS "Register linkpy by-reference (pointer-arg) tests" OFF)
 
 set(PYCALLOCS_ROOT "${LINKPY_ROOT}/.." CACHE PATH "pycallocs project root")
-set(LINKPY_LIBALLOCS_DIR "${PYCALLOCS_ROOT}/contrib/stackscan/contrib/liballocs"
+set(LINKPY_LIBALLOCS_DIR "${PYCALLOCS_ROOT}/contrib/liballocs"
     CACHE PATH "liballocs root for by-reference tests")
 set(LINKPY_ALLOCSCC "${LINKPY_LIBALLOCS_DIR}/tools/lang/c/bin/allocscc"
     CACHE FILEPATH "allocscc compiler for typed allocations")
@@ -234,10 +236,51 @@ set(LINKPY_BASETYPES_PROVIDER "${PYCALLOCS_ROOT}/build/basetypes/libbasetypes_pr
 set(LINKPY_ALLOCS_PYTHONPATH "${PYCALLOCS_ROOT}"
     CACHE PATH "directory containing the importable `allocs` extension")
 
+# allocscc locates its CIL frontend under <liballocs>/lib/ocaml by default, but
+# a liballocs tree that hasn't installed its OCaml tooling only has the built
+# cilly in contrib/cil -- point LIBALLOCS_OCAML_PREFIX there in that case.
+if(EXISTS "${LINKPY_LIBALLOCS_DIR}/lib/ocaml/bin/cilly")
+    set(_linkpy_ocaml_prefix_default "${LINKPY_LIBALLOCS_DIR}/lib/ocaml")
+else()
+    set(_linkpy_ocaml_prefix_default "${LINKPY_LIBALLOCS_DIR}/contrib/cil")
+endif()
+set(LINKPY_OCAML_PREFIX "${_linkpy_ocaml_prefix_default}"
+    CACHE PATH "LIBALLOCS_OCAML_PREFIX for allocscc (where bin/cilly lives)")
+set(LINKPY_LUAPROXY_DIR "${PYCALLOCS_ROOT}/vmextensions/lua/build"
+    CACHE PATH "directory containing luaproxy.so (the Lua vmextension)")
+
 # Like add_linkpy_test, but builds main with allocscc (typed heap) and runs it
-# under the liballocs preload with `allocs` importable, so the trampoline can
-# build a proxy from the pointer argument. Always Python.
+# under the liballocs preload with the VM's proxy extension reachable (`allocs`
+# importable for Python, luaproxy.so on LUA_CPATH for Lua), so the trampoline
+# can build a proxy from the pointer argument.
 function(add_linkpy_byref_test name)
+    cmake_parse_arguments(ARG "" "LANG" "" ${ARGN})
+    if(NOT ARG_LANG)
+        set(ARG_LANG python)
+    endif()
+
+    if(ARG_LANG STREQUAL lua)
+        set(ext "lua")
+        set(audit_lib audit_lua)
+        set(template "${LINKPY_LUA_TEMPLATE}")
+        set(marshal_src "${LINKPY_ROOT}/lua/luacpputils.cpp")
+        set(lang_dir "${LINKPY_ROOT}/lua")
+        set(lang_cflags "${LUA_CFLAGS_STR}")
+        set(lang_libs "${LUA_LDFLAGS_STR}")
+        # The linkstub's embedded Lua require()s luaproxy for pointer args.
+        set(vm_env "LUA_CPATH=${LINKPY_LUAPROXY_DIR}/?.so")
+    else()
+        set(ext "py")
+        set(audit_lib audit)
+        set(template "${LINKPY_TEMPLATE}")
+        set(marshal_src "${LINKPY_ROOT}/cpython/pycpputils.cpp")
+        set(lang_dir "${LINKPY_ROOT}/cpython")
+        set(lang_cflags "-I${PY_INCLUDE} -I${PY_PLATINCLUDE}")
+        set(lang_libs "${PYTHON_LIB} ${PY_SYSLIBS_STR}")
+        set(vm_env "PYTHONPATH=${LINKPY_ALLOCS_PYTHONPATH}")
+    endif()
+
+    set(test_name "${ARG_LANG}_${name}")
     set(test_dir "${CMAKE_CURRENT_SOURCE_DIR}/${name}")
     set(work_dir "${CMAKE_CURRENT_BINARY_DIR}/${name}")
     set(gen_dir "${work_dir}/gen")
@@ -246,7 +289,7 @@ function(add_linkpy_byref_test name)
     file(MAKE_DIRECTORY "${work_dir}")
     file(CREATE_LINK "${test_dir}/src" "${work_dir}/src" SYMBOLIC)
 
-    file(GLOB headers CONFIGURE_DEPENDS "${include_dir}/*.py.h")
+    file(GLOB headers CONFIGURE_DEPENDS "${include_dir}/*.${ext}.h")
     set(gen_sources "")
     foreach(header ${headers})
         get_filename_component(base "${header}" NAME)
@@ -259,36 +302,187 @@ function(add_linkpy_byref_test name)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${gen_dir}"
         COMMAND $<TARGET_FILE:pystubgen> "${include_dir}/" "${gen_dir}/"
         DEPENDS pystubgen ${headers}
-        COMMENT "linkpy byref test ${name}: generating stubs"
+        COMMENT "linkpy byref test ${test_name}: generating stubs"
         VERBATIM)
 
-    add_library(python_${name}_init SHARED ${gen_sources})
-    set_target_properties(python_${name}_init PROPERTIES
+    add_library(${test_name}_init SHARED ${gen_sources})
+    set_target_properties(${test_name}_init PROPERTIES
         OUTPUT_NAME init
         LIBRARY_OUTPUT_DIRECTORY "${work_dir}")
-    target_compile_options(python_${name}_init PRIVATE -g)
-    target_include_directories(python_${name}_init PRIVATE "${include_dir}")
+    target_compile_options(${test_name}_init PRIVATE -g)
+    target_include_directories(${test_name}_init PRIVATE "${include_dir}")
 
     # Build main with allocscc so its malloc'd struct carries a liballocs type.
-    set(main_exe "${work_dir}/python_${name}_main")
+    set(main_exe "${work_dir}/${test_name}_main")
     add_custom_command(
         OUTPUT "${main_exe}"
         COMMAND ${CMAKE_COMMAND} -E env "LIBALLOCS=${LINKPY_LIBALLOCS_DIR}"
+                "LIBALLOCS_OCAML_PREFIX=${LINKPY_OCAML_PREFIX}"
                 "${LINKPY_ALLOCSCC}" -std=gnu11 -g
                 "-I${include_dir}" "${test_dir}/src/main.c"
                 -o "${main_exe}" "-L${work_dir}" -linit "-Wl,-rpath,${work_dir}"
-        DEPENDS "${test_dir}/src/main.c" python_${name}_init
-        COMMENT "linkpy byref test ${name}: building main with allocscc"
+        DEPENDS "${test_dir}/src/main.c" ${test_name}_init
+        COMMENT "linkpy byref test ${test_name}: building main with allocscc"
         VERBATIM)
-    add_custom_target(python_${name}_main ALL DEPENDS "${main_exe}")
+    add_custom_target(${test_name}_main ALL DEPENDS "${main_exe}")
 
     set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
--o liblinkstub.so linkstub.cpp ${LINKPY_ROOT}/cpython/pycpputils.cpp \
--I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/cpython -I${include_dir} -I${PY_INCLUDE} -I${PY_PLATINCLUDE} \
-${PYTHON_LIB} ${PY_SYSLIBS_STR}")
+-o liblinkstub.so linkstub.cpp ${marshal_src} \
+-I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
 
-    add_test(NAME python_${name} COMMAND "${main_exe}")
-    set_tests_properties(python_${name} PROPERTIES
+    add_test(NAME ${test_name} COMMAND "${main_exe}")
+    set_tests_properties(${test_name} PROPERTIES
         WORKING_DIRECTORY "${work_dir}"
-        ENVIRONMENT "LD_AUDIT=$<TARGET_FILE:audit>;TEMPLATE_PATH=${LINKPY_TEMPLATE};LINKSTUB_BUILD_CMD=${linkstub_cmd};INIT_DWARF_PATH=${work_dir}/libinit.so;LD_PRELOAD=${LINKPY_LIBALLOCS_PRELOAD}:${LINKPY_BASETYPES_PROVIDER};PYTHONPATH=${LINKPY_ALLOCS_PYTHONPATH};LD_LIBRARY_PATH=${LINKPY_LIBALLOCS_DIR}/lib;GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288")
+        ENVIRONMENT "LINKPY_CACHE_DIR=${CMAKE_BINARY_DIR}/linkpy-cache;LD_AUDIT=$<TARGET_FILE:${audit_lib}>;TEMPLATE_PATH=${template};LINKSTUB_BUILD_CMD=${linkstub_cmd};INIT_DWARF_PATH=${work_dir}/libinit.so;LD_PRELOAD=${LINKPY_LIBALLOCS_PRELOAD}:${LINKPY_BASETYPES_PROVIDER};${vm_env};LD_LIBRARY_PATH=${LINKPY_LIBALLOCS_DIR}/lib;GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# add_linkpy_cross_test(<name> HOST <python|lua> CALLEE <python|lua>
+#                       [PASS_REGEX <re>])
+#
+# Cross-language fixture: <name>/include/*.<callee-ext>.h and
+# <name>/src/*.<callee-ext> exactly as add_linkpy_test, but the caller is a
+# HOST-language script (<name>/src/app.py or app.lua) instead of a C main. The
+# callee auditor JIT-compiles the linkstub with host bindings appended
+# (LINKPY_HOST_LANG + HOST_TEMPLATE_PATH), and the app reaches them through the
+# linkpy helper (linkpy.py / linkpy.lua). The user's C header types remain the
+# by-value ABI pivot between the two VMs.
+#
+# The linkstub compiles BOTH marshalling .cpp files (both headers are in the
+# TU) but links ONLY the callee VM's library: host VM symbols stay undefined
+# and resolve from the host interpreter binary (CPython is -export-dynamic;
+# lua is -Wl,-E / linked against a shared liblua).
+#
+# PASS_REGEX registers the test as a negative one: the run is expected to die
+# in the auditor with that diagnostic (PASS_REGULAR_EXPRESSION tolerates the
+# abort exit, unlike WILL_FAIL).
+#
+# BYREF marks a by-reference fixture: any <fixture>/clib/*.c helpers are built
+# into <work>/<name>.so with allocscc (typed heap + META_BASE symbol metadata,
+# so the host VM can mint proxied C objects from them), and the test runs with
+# LINKPY_CROSS_BYREF=1 under the liballocs preload with both proxy extensions
+# reachable. Register BYREF fixtures only under LINKPY_BYREF_TESTS.
+# ---------------------------------------------------------------------------
+find_program(LINKPY_LUA_INTERP NAMES lua5.5 lua5.4 lua5.3 lua
+    HINTS "${LINKPY_ROOT}/../contrib/lua"
+    DOC "Lua interpreter used as the HOST in cross-language tests")
+
+function(add_linkpy_cross_test name)
+    cmake_parse_arguments(ARG "BYREF" "HOST;CALLEE;PASS_REGEX" "" ${ARGN})
+
+    # Callee seams (mirror add_linkpy_test): the stub-header suffix, auditor,
+    # VM template, and the VM the linkstub links.
+    if(ARG_CALLEE STREQUAL lua)
+        set(ext "lua")
+        set(audit_lib audit_lua)
+        set(template "${LINKPY_LUA_TEMPLATE}")
+        set(callee_flags "${LUA_CFLAGS_STR}")
+        set(callee_libs "${LUA_LDFLAGS_STR}")
+    else()
+        set(ext "py")
+        set(audit_lib audit)
+        set(template "${LINKPY_TEMPLATE}")
+        set(callee_flags "-I${PY_INCLUDE} -I${PY_PLATINCLUDE}")
+        set(callee_libs "${PYTHON_LIB} ${PY_SYSLIBS_STR}")
+    endif()
+
+    # Host seams: prologue template + HOST marshaller include flags (headers
+    # only -- the host VM library is deliberately NOT linked), the interpreter
+    # command, and the env that lets the app import/require the linkpy helper.
+    if(ARG_HOST STREQUAL python)
+        set(host_template "${LINKPY_ROOT}/cpython/template_host_py.cpp")
+        set(host_flags "-I${PY_INCLUDE} -I${PY_PLATINCLUDE}")
+        set(run_cmd "${PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/${name}/src/app.py")
+        # The allocs/elflib path is only exercised by BYREF fixtures but is
+        # harmless otherwise.
+        set(helper_env "PYTHONPATH=${LINKPY_ROOT}/cpython:${LINKPY_ALLOCS_PYTHONPATH}")
+    else()
+        if(NOT LINKPY_LUA_INTERP)
+            message(STATUS "linkpy: cross test ${name} skipped (no lua interpreter found)")
+            return()
+        endif()
+        set(host_template "${LINKPY_ROOT}/lua/template_host_lua.cpp")
+        set(host_flags "${LUA_CFLAGS_STR}")
+        set(run_cmd "${LINKPY_LUA_INTERP}" "${CMAKE_CURRENT_SOURCE_DIR}/${name}/src/app.lua")
+        # No ';;' default-path suffix: a ';' cannot survive CMake's ENVIRONMENT
+        # list escaping intact, and the apps only require the linkpy helper.
+        set(helper_env "LUA_PATH=${LINKPY_ROOT}/lua/?.lua")
+    endif()
+
+    set(test_name "cross_${name}")
+    set(test_dir "${CMAKE_CURRENT_SOURCE_DIR}/${name}")
+    set(work_dir "${CMAKE_CURRENT_BINARY_DIR}/${name}")
+    set(gen_dir "${work_dir}/gen")
+    set(include_dir "${test_dir}/include")
+
+    file(MAKE_DIRECTORY "${work_dir}")
+    # The callee VM inside the linkstub searches ./src for the scripting module.
+    file(CREATE_LINK "${test_dir}/src" "${work_dir}/src" SYMBOLIC)
+
+    file(GLOB headers CONFIGURE_DEPENDS "${include_dir}/*.${ext}.h")
+    set(gen_sources "")
+    foreach(header ${headers})
+        get_filename_component(base "${header}" NAME)        # e.g. mytest.lua.h
+        string(REGEX REPLACE "\\.h$" ".c" gen_c "${base}")   # -> mytest.lua.c
+        list(APPEND gen_sources "${gen_dir}/${gen_c}")
+    endforeach()
+
+    add_custom_command(
+        OUTPUT ${gen_sources} "${gen_dir}/heap_hints.txt"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${gen_dir}"
+        COMMAND $<TARGET_FILE:pystubgen> "${include_dir}/" "${gen_dir}/"
+        DEPENDS pystubgen ${headers}
+        COMMENT "linkpy cross test ${name}: generating stubs"
+        VERBATIM)
+
+    add_library(${test_name}_init SHARED ${gen_sources})
+    set_target_properties(${test_name}_init PROPERTIES
+        OUTPUT_NAME init
+        LIBRARY_OUTPUT_DIRECTORY "${work_dir}")
+    target_compile_options(${test_name}_init PRIVATE -g)
+    target_include_directories(${test_name}_init PRIVATE "${include_dir}")
+
+    # By-reference extras: allocscc-built typed helper libraries the host VM
+    # creates proxied C objects from, plus the liballocs runtime environment.
+    set(byref_env "")
+    if(ARG_BYREF)
+        set(byref_meta "${work_dir}/meta")
+        file(GLOB clib_sources CONFIGURE_DEPENDS "${test_dir}/clib/*.c")
+        set(clib_sos "")
+        foreach(csrc ${clib_sources})
+            get_filename_component(cname "${csrc}" NAME_WE)
+            set(cso "${work_dir}/${cname}.so")
+            add_custom_command(
+                OUTPUT "${cso}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${byref_meta}"
+                COMMAND ${CMAKE_COMMAND} -E env "LIBALLOCS=${LINKPY_LIBALLOCS_DIR}"
+                        "LIBALLOCS_OCAML_PREFIX=${LINKPY_OCAML_PREFIX}"
+                        "META_BASE=${byref_meta}"
+                        "${LINKPY_ALLOCSCC}" -std=gnu11 -g -fPIC -shared
+                        "${csrc}" -o "${cso}"
+                DEPENDS "${csrc}"
+                COMMENT "linkpy cross byref ${name}: building ${cname}.so with allocscc"
+                VERBATIM)
+            list(APPEND clib_sos "${cso}")
+        endforeach()
+        add_custom_target(${test_name}_clibs ALL DEPENDS ${clib_sos})
+
+        # LUA_CPATH serves whichever side is Lua: the host state extracting
+        # addresses, or the callee state re-proxying them.
+        set(byref_env ";LINKPY_CROSS_BYREF=1;LD_PRELOAD=${LINKPY_LIBALLOCS_PRELOAD}:${LINKPY_BASETYPES_PROVIDER};LD_LIBRARY_PATH=${LINKPY_LIBALLOCS_DIR}/lib;GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288;META_BASE=${byref_meta};LUA_CPATH=${LINKPY_LUAPROXY_DIR}/?.so")
+    endif()
+
+    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
+-o liblinkstub.so linkstub.cpp ${LINKPY_ROOT}/cpython/pycpputils.cpp ${LINKPY_ROOT}/lua/luacpputils.cpp \
+-I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${LINKPY_ROOT}/cpython -I${LINKPY_ROOT}/lua \
+-I${include_dir} ${callee_flags} ${host_flags} ${callee_libs}")
+
+    add_test(NAME ${test_name} COMMAND ${run_cmd})
+    set_tests_properties(${test_name} PROPERTIES
+        WORKING_DIRECTORY "${work_dir}"
+        ENVIRONMENT "LINKPY_CACHE_DIR=${CMAKE_BINARY_DIR}/linkpy-cache;LD_AUDIT=$<TARGET_FILE:${audit_lib}>;TEMPLATE_PATH=${template};HOST_TEMPLATE_PATH=${host_template};LINKPY_HOST_LANG=${ARG_HOST};LINKSTUB_BUILD_CMD=${linkstub_cmd};INIT_DWARF_PATH=$<TARGET_FILE:${test_name}_init>;${helper_env}${byref_env}")
+    if(ARG_PASS_REGEX)
+        set_tests_properties(${test_name} PROPERTIES
+            PASS_REGULAR_EXPRESSION "${ARG_PASS_REGEX}")
+    endif()
 endfunction()

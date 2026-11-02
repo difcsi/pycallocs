@@ -26,6 +26,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # the flag, even if it doesn't instantiate the aggregate path.
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 
+# Quiet by default. The auditor's and the linkstub's progress chatter (one
+# line per call, among others) is for debugging LinkPy itself; a server
+# hosting Python cannot have it. ON defines DEBUG for the tools here; the
+# runtime linkstub gets it by adding -DDEBUG to LINKSTUB_BUILD_CMD.
+option(LINKPY_DEBUG "Print LinkPy's own debug chatter (auditor, stub generator)" OFF)
+if(LINKPY_DEBUG)
+    add_compile_definitions(DEBUG)
+endif()
+
 set(PYTHON "python3" CACHE STRING "Python interpreter to build against")
 
 # --- Query the interpreter for version + include/lib layout ----------------
@@ -104,6 +113,10 @@ endif()
 
 set(PY_INCLUDES "${PY_INCLUDE}" "${PY_PLATINCLUDE}")
 
+# Project-wide shared code (pycpputils.hpp, tokenject.hpp) lives in the
+# superproject's common/ folder, one level above this tree.
+get_filename_component(PYCALLOCS_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../common" ABSOLUTE)
+
 # Output both artifacts into dist/ (the layout other tools expect).
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist")
@@ -156,12 +169,12 @@ option(LINKPY_INJECT_STUBS
     "DRAFT: emit a descriptor + consteval injector for the linkstub instead of printed trampolines (P3294)" OFF)
 
 # --- audit.so (LD_AUDIT library) -------------------------------------------
-set(_audit_sources common/auditor.cpp cpython/pycpputils.cpp common/linkmap.cpp common/dwarfmap.cpp)
+set(_audit_sources common/auditor.cpp common/hostgen.cpp cpython/pycpputils.cpp common/linkmap.cpp common/dwarfmap.cpp common/linkstub_cache.cpp)
 if(LINKPY_INJECT_STUBS)
     list(APPEND _audit_sources common/codegen_inject.cpp)
 endif()
 add_library(audit MODULE ${_audit_sources})
-target_include_directories(audit PRIVATE common cpython ${PY_INCLUDES})
+target_include_directories(audit PRIVATE common cpython "${PYCALLOCS_COMMON_DIR}" ${PY_INCLUDES})
 target_link_libraries(audit PRIVATE ${PYTHON_LIB} ${PY_SYSLIBS} ${DW_LIB})
 if(LINKPY_INJECT_STUBS)
     target_compile_definitions(audit PRIVATE LINKPY_INJECT_STUBS)
@@ -174,7 +187,7 @@ set_target_properties(audit PROPERTIES PREFIX "" OUTPUT_NAME "audit" SUFFIX ".so
 # CPython. The trampoline codegen is identical. Only built when liblua is found.
 if(LUA_FOUND)
     add_library(audit_lua MODULE
-        common/auditor.cpp lua/luacpputils.cpp common/linkmap.cpp common/dwarfmap.cpp)
+        common/auditor.cpp common/hostgen.cpp lua/luacpputils.cpp common/linkmap.cpp common/dwarfmap.cpp common/linkstub_cache.cpp)
     target_include_directories(audit_lua PRIVATE common lua)
     target_link_libraries(audit_lua PRIVATE PkgConfig::LUA ${DW_LIB})
     target_compile_definitions(audit_lua PRIVATE LINKPY_LANG_LUA)
@@ -196,6 +209,9 @@ if(EXISTS "${LINKPY_TESTS_DIR}/tests.cmake")
     add_subdirectory("${LINKPY_TESTS_DIR}/cpython" tests/cpython)
     if(LUA_FOUND)
         add_subdirectory("${LINKPY_TESTS_DIR}/lua" tests/lua)
+        # Cross-language (VM host -> VM callee) tests need Lua on one side or
+        # the other in every combination, so they gate on it as a whole.
+        add_subdirectory("${LINKPY_TESTS_DIR}/cross" tests/cross)
     else()
         message(STATUS "linkpy: Lua test suite disabled (liblua not found)")
     endif()

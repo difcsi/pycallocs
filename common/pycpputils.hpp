@@ -4,6 +4,16 @@
 #include <type_traits>
 #include <string>
 #include <stdexcept>
+#include <cstring>
+
+// Everything lives in linkpy::py so a cross-language linkstub TU can include
+// this header together with luacpputils.hpp (linkpy::lua) without the
+// run_function templates colliding.
+namespace linkpy::py {
+
+// Starts the interpreter on first use (defined by the VM template; the
+// linkstub does not start it at load time).
+void ensure_vm();
 
 PyObject *import_module(const char *name);
 PyObject *import_function(PyObject *module, const char *name);
@@ -13,6 +23,48 @@ void init_py();
 // Wrap a raw C pointer in a pycallocs proxy via allocs.proxy_from_address.
 // Returns a NEW reference, or NULL with a Python exception set.
 PyObject *proxy_from_c_ptr(const void *ptr);
+
+// The inverse, for by-reference arguments ARRIVING from a Python host: extract
+// the raw C address from a pycallocs proxy (allocs.address_of, falling back to
+// debug_handle_info for allocs builds predating it). Throws std::runtime_error
+// when obj is not a proxy or allocs is unavailable.
+void *ptr_from_proxy(PyObject *obj);
+
+// Fixed-size char arrays inside a by-value struct cross as Python bytes. A C
+// array cannot be returned or assigned, so the aggregate loop in PyObject_to_T
+// fills the member in place: a bytes/bytearray no longer than the array is
+// copied in and the remainder stays at the zero the enclosing `T result{}`
+// gave it, which leaves a char[N] NUL-terminated for the C side.
+template <typename T>
+void PyObject_into_array(PyObject *obj, T &dest, const char *field)
+{
+    using Elem = std::remove_cv_t<std::remove_extent_t<T>>;
+    static_assert(std::is_same_v<Elem, char> || std::is_same_v<Elem, unsigned char>
+                      || std::is_same_v<Elem, signed char>,
+                  "only char arrays cross as bytes");
+    const char *buf;
+    Py_ssize_t n;
+    if (PyBytes_Check(obj))
+    {
+        buf = PyBytes_AS_STRING(obj);
+        n = PyBytes_GET_SIZE(obj);
+    }
+    else if (PyByteArray_Check(obj))
+    {
+        buf = PyByteArray_AS_STRING(obj);
+        n = PyByteArray_GET_SIZE(obj);
+    }
+    else
+    {
+        throw std::runtime_error(std::string("field '") + field + "' must be bytes or bytearray");
+    }
+    if (n > static_cast<Py_ssize_t>(std::extent_v<T>))
+    {
+        throw std::runtime_error(std::string("field '") + field + "': " + std::to_string(n)
+                                 + " bytes do not fit a char[" + std::to_string(std::extent_v<T>) + "]");
+    }
+    std::memcpy(dest, buf, static_cast<size_t>(n));
+}
 
 // Convert a Python object into a C/C++ value of type T. Defined here (rather
 // than in a .cpp) so that every translation unit that instantiates it — in
@@ -96,7 +148,10 @@ T PyObject_to_T(PyObject *pValue)
                 throw std::runtime_error(std::string("Missing attribute '") + field + "'");
             }
             using FieldT = [:std::meta::type_of(member):];
-            result.[:member:] = PyObject_to_T<FieldT>(attr);
+            if constexpr (std::is_array_v<FieldT>)
+                PyObject_into_array(attr, result.[:member:], field);
+            else
+                result.[:member:] = PyObject_to_T<FieldT>(attr);
             Py_DECREF(attr);
         }
         return result;
@@ -136,6 +191,30 @@ PyObject *T_to_PyObject(const T &value)
     else if constexpr (std::is_same<T, std::string>::value)
     {
         return PyUnicode_FromString(value.c_str());
+    }
+    else if constexpr (std::is_same_v<T, const char *> || std::is_same_v<T, char *>)
+    {
+        // A char* FIELD of a by-value struct: the same string mapping a top-level
+        // char* argument gets (arg_to_PyObject), NULL included.
+        if (value == nullptr) Py_RETURN_NONE;
+        PyObject *str = PyUnicode_FromString(value);
+        if (str == nullptr)
+        {
+            PyErr_Print();
+            throw std::runtime_error("T_to_PyObject: char* is not valid UTF-8");
+        }
+        return str;
+    }
+    else if constexpr (std::is_array_v<T>)
+    {
+        // A fixed-size char array crosses whole, as a bytes as long as the
+        // array; the struct's own length field, if any, says how much of it
+        // means anything. Checked before is_aggregate_v: arrays are aggregates.
+        using Elem = std::remove_cv_t<std::remove_extent_t<T>>;
+        static_assert(std::is_same_v<Elem, char> || std::is_same_v<Elem, unsigned char>
+                          || std::is_same_v<Elem, signed char>,
+                      "only char arrays cross as bytes");
+        return PyBytes_FromStringAndSize(reinterpret_cast<const char *>(value), std::extent_v<T>);
     }
     else if constexpr (std::is_aggregate_v<T>)
     {
@@ -198,7 +277,13 @@ PyObject *arg_to_PyObject(const T &value)
     if constexpr (std::is_same_v<T, const char *> || std::is_same_v<T, char *>)
     {
         if (value == nullptr) Py_RETURN_NONE;
-        return PyUnicode_FromString(value);
+        PyObject *str = PyUnicode_FromString(value);
+        if (str == nullptr)
+        {
+            PyErr_Print();
+            throw std::runtime_error("arg_to_PyObject: char* is not valid UTF-8");
+        }
+        return str;
     }
     else if constexpr (std::is_pointer_v<T>)
     {
@@ -228,9 +313,22 @@ static PyObject *pack_args(Args... args)
     return pArgs;
 }
 
+// Holds the GIL for one trampoline call. The linkstub parks the GIL once the
+// interpreter is up (template.cpp), so between calls other Python threads run.
+struct GilGuard
+{
+    PyGILState_STATE state;
+    GilGuard() : state(PyGILState_Ensure()) {}
+    ~GilGuard() { PyGILState_Release(state); }
+    GilGuard(const GilGuard &) = delete;
+    GilGuard &operator=(const GilGuard &) = delete;
+};
+
 template <typename... Args>
 void run_function_void(const std::string &module, const std::string &function, int argc, Args... args)
 {
+    ensure_vm();
+    GilGuard gil;
 #ifdef DEBUG
     std::cout << "Running function " << function << " from module " << module << " with " << argc << " arguments" << std::endl;
 #endif
@@ -259,6 +357,8 @@ void run_function_void(const std::string &module, const std::string &function, i
 template <typename T, typename... Args>
 T run_function(const std::string &module, const std::string &function, int argc, Args... args)
 {
+    ensure_vm();
+    GilGuard gil;
 #ifdef DEBUG
     std::cout << "Running function " << function << " from module " << module << " with " << argc << " arguments" << std::endl;
 #endif
@@ -292,3 +392,5 @@ T run_function(const std::string &module, const std::string &function, int argc,
 
     return result;
 }
+
+} // namespace linkpy::py

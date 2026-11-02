@@ -2,6 +2,8 @@
 #include <stdexcept>
 #include <string>
 
+namespace linkpy::py {
+
 void init_py()
 {
     Py_Initialize();
@@ -77,3 +79,59 @@ PyObject *proxy_from_c_ptr(const void *ptr)
     Py_DECREF(addr);
     return proxy;
 }
+
+// Inverse bridge for by-reference arguments arriving FROM a Python host: the
+// proxy's underlying address, via allocs.address_of. Older allocs builds
+// predate address_of, so fall back to debug_handle_info (whose first tuple
+// element is the same pointer) -- that keeps a prebuilt extension usable.
+void *ptr_from_proxy(PyObject *obj)
+{
+    static PyObject *bridge = nullptr;
+    static bool bridge_is_debug = false;
+    if (bridge == nullptr)
+    {
+        PyObject *mod = PyImport_ImportModule("allocs");
+        if (mod == nullptr)
+        {
+            PyErr_Print();
+            throw std::runtime_error("ptr_from_proxy: cannot import allocs "
+                                     "(is the pycallocs extension on PYTHONPATH?)");
+        }
+        bridge = PyObject_GetAttrString(mod, "address_of");
+        if (bridge == nullptr)
+        {
+            PyErr_Clear();
+            bridge = PyObject_GetAttrString(mod, "debug_handle_info");
+            bridge_is_debug = true;
+        }
+        Py_DECREF(mod);
+        if (bridge == nullptr)
+        {
+            PyErr_Print();
+            throw std::runtime_error("ptr_from_proxy: allocs has neither "
+                                     "address_of nor debug_handle_info");
+        }
+    }
+
+    PyObject *res = PyObject_CallOneArg(bridge, obj);
+    if (res == nullptr)
+    {
+        PyErr_Print();
+        throw std::runtime_error("ptr_from_proxy: not a pycallocs proxy "
+                                 "(by-reference arguments must be proxies over "
+                                 "liballocs-typed C memory)");
+    }
+    PyObject *addr_obj = bridge_is_debug ? PyTuple_GetItem(res, 0) /* borrowed */
+                                         : res;
+    void *addr = addr_obj ? PyLong_AsVoidPtr(addr_obj) : nullptr;
+    bool failed = (PyErr_Occurred() != nullptr);
+    Py_DECREF(res);
+    if (failed)
+    {
+        PyErr_Print();
+        throw std::runtime_error("ptr_from_proxy: cannot read proxy address");
+    }
+    return addr;
+}
+
+} // namespace linkpy::py

@@ -45,9 +45,25 @@ static PyObject *allocs_debug_handle_info(PyObject *self, PyObject *arg)
     return ret;
 }
 
+// The inverse of proxy_from_address: a proxy's underlying addresslike pointer
+// as a Python int. Used by linkpy's cross-language host wrappers to pass a
+// proxied C object onward by reference (the address crosses the C trampoline
+// raw; the callee VM re-proxies it).
+static PyObject *allocs_address_of(PyObject *self, PyObject *arg)
+{
+    if (!PyObject_TypeCheck(arg, &Proxy_Type))
+    {
+        PyErr_SetString(PyExc_TypeError, "address_of: expected a pycallocs proxy");
+        return NULL;
+    }
+    return PyLong_FromVoidPtr(((ProxyObject *) arg)->p_ptr);
+}
+
 static PyMethodDef allocs_methods[] = {
     {"proxy_from_address", allocs_proxy_from_address, METH_O,
      "Wrap a raw C address (int) in a pycallocs proxy for the pointee."},
+    {"address_of", allocs_address_of, METH_O,
+     "A proxy's underlying addresslike pointer, as an int."},
     {"debug_handle_info", allocs_debug_handle_info, METH_O,
      "(ptr, is_handle, refcount|None) for a proxy -- verification aid."},
     {NULL, NULL, 0, NULL}

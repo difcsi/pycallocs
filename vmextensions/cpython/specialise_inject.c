@@ -33,17 +33,20 @@
 #define PYCALLOCS_TRANSLATE_CXX "g++-16"
 #endif
 
-// Both pycpputils.hpp (PyObject_to_T / T_to_PyObject) and pyc_inject.hpp (the
-// token-sequence injector) are baked into the extension at build time and
-// written verbatim into every generated translator, so the client needs neither
-// on disk at runtime. Mirrors specialise.c's single #embed of pycpputils.hpp.
+// pycpputils.hpp (PyObject_to_T / T_to_PyObject), pyc_inject.hpp (the
+// token-sequence injector) and tokenject.hpp (the consteval machinery shared
+// with the linker, which pyc_inject.hpp #include's) are baked into the
+// extension at build time and reproduced for every generated translator, so
+// the client needs none of them on disk at runtime. Mirrors specialise.c's
+// single #embed of pycpputils.hpp.
 #if defined(__has_embed)
-#  if __has_embed("pycpputils.hpp") && __has_embed("pyc_inject.hpp")
+#  if __has_embed("pycpputils.hpp") && __has_embed("pyc_inject.hpp") && \
+      __has_embed("tokenject.hpp")
 #    define PYC_HAVE_EMBED 1
 #  endif
 #endif
 #ifndef PYC_HAVE_EMBED
-#  error "INJECT_CONVERSION needs a #embed-capable C compiler (C23: gcc>=15 / clang>=19) with pycpputils.hpp and pyc_inject.hpp on the embed path (--embed-dir). Build the extension with e.g. -DUSE_ALASKA_CLANG=OFF -DUSE_ALASKA=OFF (system cc) or set CC accordingly."
+#  error "INJECT_CONVERSION needs a #embed-capable C compiler (C23: gcc>=15 / clang>=19) with pycpputils.hpp, tokenject.hpp and pyc_inject.hpp on the embed path (--embed-dir). Build the extension with e.g. -DUSE_ALASKA_CLANG=OFF -DUSE_ALASKA=OFF (system cc) or set CC accordingly."
 #endif
 
 static const char pycpputils_hpp[] = {
@@ -52,6 +55,10 @@ static const char pycpputils_hpp[] = {
 };
 static const char pyc_inject_hpp[] = {
 #embed "pyc_inject.hpp"
+    , '\0'
+};
+static const char tokenject_hpp[] = {
+#embed "tokenject.hpp"
     , '\0'
 };
 
@@ -103,6 +110,15 @@ static const char *gen_dir(void)
     if (!made)
     {
         if (!mkdtemp(dir)) return NULL;
+        // Materialise the embedded tokenject.hpp next to the generated TUs:
+        // pyc_inject.hpp (inlined into each TU below) does
+        // `#include "tokenject.hpp"`, which quote-resolves relative to the TU.
+        char hdrpath[PATH_MAX];
+        snprintf(hdrpath, sizeof hdrpath, "%s/tokenject.hpp", dir);
+        FILE *hf = fopen(hdrpath, "w");
+        if (!hf) return NULL;
+        fputs(tokenject_hpp, hf);
+        fclose(hf);
         made = 1;
     }
     return dir;
@@ -250,7 +266,9 @@ static int build_translators(const struct uniqtype *t, struct translators *out)
     FILE *sf = fopen(srcpath, "w");
     if (!sf) return -1;
 
-    // Inline the embedded headers so the translator is self-contained.
+    // Inline the embedded headers so the translator is self-contained
+    // (tokenject.hpp, which pyc_inject.hpp includes, was written into the gen
+    // dir by gen_dir(), so the quote-include resolves next to this TU).
     fputs(pycpputils_hpp, sf);
     fputc('\n', sf);
     fputs(pyc_inject_hpp, sf);

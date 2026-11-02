@@ -160,10 +160,144 @@ the same language-parameterized helpers; see the `lua_*` and `lua_typecheck_*`
 tests for end-to-end examples, including a struct return and a header derived from
 `---@` hints.
 
-By-reference (pointer) arguments are not yet supported on the Lua path: there is
-no pycallocs-style proxy for Lua, so a pointer argument is passed as opaque light
-userdata and writes do not propagate back (the Python by-reference path remains
-the reference implementation for that).
+By-reference (pointer) arguments work on the Lua path too: a non-`char*`
+pointer argument is wrapped in a **luaproxy** proxy (`vmextensions/lua`) via
+`require("luaproxy").proxy_from_address` — the exact mirror of the Python
+path's pycallocs proxy — so writes through the proxy propagate back into the
+live C object. Like the Python path it needs the liballocs runtime: the caller
+compiled with `allocscc` (typed heap), the liballocs preload + base-types
+provider, and `luaproxy.so` reachable via `LUA_CPATH`. Both `*_ptr_arg` tests
+are gated behind `-DLINKPY_BYREF_TESTS=ON`. Note that luaproxy serves one
+`lua_State` per process; under linkpy that state is the linkstub's embedded VM.
+
+## Cross-language calls (Python ↔ Lua)
+
+LinkPy can also bridge two VMs: a **Python program calling Lua functions**, or a
+**Lua program calling Python functions**, with the user's C header as the ABI
+contract in the middle. The callee side is exactly the existing pipeline (the
+`.py.h`/`.lua.h` header → `pystubgen` → `libinit.so` → the callee auditor JITs
+`liblinkstub.so` with the `extern "C"` trampolines). What's new is the **host
+side**: when `LINKPY_HOST_LANG` names a VM, the auditor appends host-language
+binding code to the same linkstub — for a Python host a real CPython module per
+foreign scripting module (inserted into `sys.modules`), for a Lua host an
+exported `luaopen_linkstub(L)` that fills `package.loaded`. Each generated
+wrapper converts host-VM values to C values with the host marshaller
+(`linkpy::py` / `linkpy::lua`), calls the trampoline, and converts the result
+back; the callee marshaller inside the trampoline does the other half. Host
+objects and callee objects never meet — **the user-defined C struct is the
+by-value pivot**: `PyObject ↔ struct Point ↔ Lua table`.
+
+The host program loads the bridge through a tiny helper:
+
+```python
+# python app.py — Lua callee (audit_lua.so)
+import linkpy                      # linker/cpython/linkpy.py (on PYTHONPATH)
+shapes = linkpy.load("shapes")     # dlopen ./libinit.so -> auditor redirect
+p = shapes.make_point(3, 4)        # crosses Python -> struct Point -> Lua table
+shapes.describe(p)
+```
+
+```lua
+-- lua app.lua — Python callee (audit.so)
+local linkpy = require("linkpy")   -- linker/lua/linkpy.lua (on LUA_PATH)
+local shapes = linkpy.load("shapes")
+local p = shapes.make_point(3, 4)  -- crosses Lua -> struct Point -> Python
+shapes.describe(p)
+```
+
+Environment, on top of the usual four variables (`LD_AUDIT` names the **callee**
+auditor; the host language never changes the auditor binary):
+
+| variable | value |
+| --- | --- |
+| `LINKPY_HOST_LANG` | `c` (default, today's behavior) \| `python` \| `lua` |
+| `HOST_TEMPLATE_PATH` | `cpython/template_host_py.cpp` or `lua/template_host_lua.cpp` (required when host ≠ c) |
+
+and `LINKSTUB_BUILD_CMD` must compile both marshalling `.cpp` files with both
+VMs' include paths but **link only the callee VM's library**: the host VM
+belongs to the host process, so host `Py*`/`lua_*` references stay undefined
+and resolve against the host interpreter binary (CPython links
+`-export-dynamic`; `lua` links `-Wl,-E` — a host binary that exports neither
+cannot serve as a cross-language host). Linking the host VM's library instead
+would alias two interpreters through ELF interposition, which is also why a
+same-language host+callee combination is rejected outright.
+
+Semantics and limits:
+
+* **By value by default.** Scalars (`int`/`double`/`float`/`bool`), `char*`/
+  `const char*` strings, and user-defined structs cross as copies through the
+  C layout. Without the opt-in below, a pointer parameter or pointer return in
+  a cross-language signature is rejected by the auditor before the JIT compile
+  with *"by-reference does not cross language boundaries"*.
+* **By reference with `LINKPY_CROSS_BYREF=1`.** A pointer parameter then
+  crosses as a **proxy handoff**: the generated host wrapper extracts the raw
+  address from the host VM's proxy (`allocs.address_of` / luaproxy's
+  `address_of`), it crosses the C trampoline as a plain pointer, and the
+  callee marshaller re-proxies it (`proxy_from_address` on either side) — one
+  live C object, two VMs, writes visible in both. This requires the liballocs
+  runtime (preload + base-types provider), the object to be liballocs-typed
+  (e.g. minted from an allocscc-compiled library through the vmextensions
+  loaders), and both proxy extensions reachable (`allocs` on `PYTHONPATH`,
+  `luaproxy.so` on `LUA_CPATH`). The linkpy helpers load the init library with
+  `RTLD_GLOBAL` so the callee VM's library is visible to the proxy extension
+  its VM dlopens. Pointer *returns* stay rejected (no ownership story yet).
+  See the `cross_*_bump` fixtures, gated behind `-DLINKPY_BYREF_TESTS=ON`.
+* **Single callee language per init library** — every stub must carry the same
+  `.py.`/`.lua.` marker (now tracked as `FunLinkEntry::lang`).
+* **Module names must be free** in the host VM: registration refuses to
+  overwrite an existing `sys.modules` / `package.loaded` entry.
+* One `libinit.so` per process (the auditor JITs once); calls are expected on
+  the thread that loaded the library (the embedded-callee GIL/state pattern is
+  the same single-thread one the C-host path uses).
+
+The `cross_*` tests under `tests/linker/cross/` are end-to-end examples of all
+of the above, registered via `add_linkpy_cross_test(<fixture> HOST <python|lua>
+CALLEE <python|lua>)` in `tests/linker/tests.cmake` — including the negative
+pointer-rejection fixture. Unresolved design questions (pointer-return
+ownership, typed allocation from the header, lifetime coordination, threading,
+symbol hygiene, CI) are collected in
+`docs/CROSS_LANGUAGE_OPEN_QUESTIONS.md`.
+
+## Strings and byte buffers inside by-value structs
+
+Two more member kinds cross inside a by-value struct, on top of scalars and
+nested structs:
+
+* **`char *` / `const char *` fields** arrive in Python as `str` (`NULL` →
+  `None`), the mapping a top-level `char *` argument already had. This is the
+  C → Python direction only; a `char *` coming *back* from Python would need an
+  ownership story and is still rejected.
+* **Fixed-size `char[N]` / `unsigned char[N]` fields** cross as `bytes` in both
+  directions. C → Python the whole array arrives (a `bytes` of length N; a
+  length field of the struct's own says how much of it means anything), so
+  embedded NULs survive, which a `char *` could never carry. Python → C a
+  `bytes`/`bytearray` of at most N bytes is copied in and the remainder stays
+  zero, so a `char[N]` comes back NUL-terminated for C. The DWARF reader renders
+  the member as `elem name[N]` in the emitted struct definition.
+
+This is what lets variable-length data (an HTTP body, a block of headers) cross
+a by-value boundary: a struct with an array of a fixed capacity plus a length.
+See the `python_bytes_array` and `python_str_field` tests.
+
+## Quiet by default, the GIL, and the linkstub cache
+
+* **Quiet.** Neither the auditor nor the linkstub prints anything unless asked:
+  `-DLINKPY_DEBUG=ON` at configure time for the tools, `-DDEBUG` in
+  `LINKSTUB_BUILD_CMD` for the runtime linkstub. The JIT compiler's diagnostics
+  stay visible either way (`python_simple_divide` asserts on the silence).
+* **GIL.** Once the embedded interpreter is up, the linkstub parks the GIL
+  (`PyEval_SaveThread`); every trampoline takes it for the duration of its call
+  (`GilGuard` in `pycpputils.hpp`). A long-running C host therefore lets Python
+  threads an application started keep running between calls
+  (`python_gil_release`).
+* **Cache.** The compiled `liblinkstub.so` is cached under
+  `$LINKPY_CACHE_DIR` (empty disables), else `$XDG_CACHE_HOME/linkpy`, else
+  `~/.cache/linkpy`, keyed by a SHA-256 of the auditor binary, the template(s),
+  the stub library's DWARF and the build command. A second process with the
+  same inputs (a forked app server, a restarted test) loads the cached file and
+  never runs the compiler (`python_linkstub_cache`). On a hit the auditor also
+  skips its load-time check that the Python module defines every stub function;
+  a missing one surfaces at call time instead.
 
 ## TODOS
 

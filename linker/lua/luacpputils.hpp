@@ -24,6 +24,11 @@ extern "C" {
 #include <string>
 #include <stdexcept>
 
+// Everything lives in linkpy::lua so a cross-language linkstub TU can include
+// this header together with pycpputils.hpp (linkpy::py) without the
+// run_function templates colliding.
+namespace linkpy::lua {
+
 // VM lifecycle + module resolution (defined in src/luacpputils.cpp), mirroring
 // pycpputils.cpp's init_py/import_module. One lua_State is created lazily and
 // shared across calls; template_lua.cpp creates it eagerly in a constructor and
@@ -41,6 +46,20 @@ void push_module_function(lua_State *L, const std::string &module,
 // `require(module)[function]` (or a global of that name) is a function.
 bool function_exists(lua_State *L, const std::string &module,
                      const std::string &function);
+
+// Bridge for by-reference (pointer) arguments: push a luaproxy proxy wrapping
+// the raw C address, via require("luaproxy").proxy_from_address(addr) -- the
+// Lua dual of pycpputils' proxy_from_c_ptr. Throws std::runtime_error when
+// luaproxy is not loadable or liballocs has no proxyable type at the address
+// (mirroring the Python path's "cannot proxy pointer argument"). Defined in
+// luacpputils.cpp.
+void push_proxy_from_c_ptr(lua_State *L, const void *ptr);
+
+// The inverse, for by-reference arguments ARRIVING from a Lua host: extract
+// the raw C address from the luaproxy proxy at stack index idx, via
+// luaproxy's address_of. Throws std::runtime_error when the value is not a
+// proxy or luaproxy is unavailable. Defined in luacpputils.cpp.
+void *ptr_from_proxy(lua_State *L, int idx);
 
 // Throw a std::runtime_error built from the Lua error object on the stack top
 // (which it pops), prefixed with `what`. Mirrors pycpputils' PyErr_Print + throw.
@@ -104,10 +123,10 @@ T lua_to(lua_State *L, int idx)
         template for (constexpr auto member : std::define_static_array(
                           std::meta::nonstatic_data_members_of(^^T, ctx)))
         {
-            constexpr const char *field =
+            constexpr const char *field = 
                 std::define_static_string(std::meta::identifier_of(member));
             lua_getfield(L, table, field);   // pushes table[field]
-            using FieldT = [:std::meta::type_of(member):];
+            using FieldT = [:std::meta::type_of(member):]; 
             result.[:member:] = lua_to<FieldT>(L, -1);
             lua_pop(L, 1);                    // pop table[field]
         }
@@ -154,13 +173,13 @@ void push_value(lua_State *L, const T &value)
     }
 }
 
-// Decide, per top-level argument, how a C value becomes a Lua value:
+// Decide, per top-level argument, how a C value becomes a Lua value. This
+// mirrors arg_to_PyObject in pycpputils.hpp:
 //  - char* / const char*  -> Lua string (by value)
-//  - any other pointer T*  -> light userdata holding the address. NOTE: unlike
-//    the Python path (a pycallocs proxy), this is NOT by-reference -- Lua has no
-//    proxy yet, so writes do not propagate back. It keeps the call well-formed
-//    for opaque handles; the by-value scalar/struct/string paths are the
-//    supported surface.
+//  - any other pointer T*  -> a luaproxy proxy wrapping the pointee, so the
+//    object is passed BY REFERENCE and Lua writes propagate back into C.
+//    Needs the liballocs runtime (typed allocation + luaproxy on LUA_CPATH);
+//    without it the call throws, exactly like the Python path.
 //  - everything else       -> push_value (by value)
 template <typename T>
 void push_arg(lua_State *L, const T &value)
@@ -173,8 +192,7 @@ void push_arg(lua_State *L, const T &value)
     else if constexpr (std::is_pointer_v<T>)
     {
         if (value == nullptr) lua_pushnil(L);
-        else lua_pushlightuserdata(
-            L, const_cast<void *>(reinterpret_cast<const void *>(value)));
+        else push_proxy_from_c_ptr(L, value);   // T* converts to const void*
     }
     else
     {
@@ -208,3 +226,5 @@ T run_function(const std::string &module, const std::string &function,
     lua_pop(L, 1);                                // keep the stack balanced
     return result;
 }
+
+} // namespace linkpy::lua
