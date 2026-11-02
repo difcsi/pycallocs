@@ -2,6 +2,7 @@
 #include <liballocs.h>
 #include <ffi.h>
 #include <dwarf.h>
+#include <ffitypes.h> /* shared uniqtype -> ffi_type mapping (vmextensions/common) */
 
 typedef struct {
     PyTypeObject tp_base;
@@ -11,146 +12,6 @@ typedef struct {
     ForeignTypeObject *ff_rettype;
     PyTypeObject *ff_closure_type;
 } FunctionProxyTypeObject;
-
-static void free_ffi_type_arr(ffi_type **arr);
-static void free_ffi_type(ffi_type *typ)
-{
-    if (typ->type == FFI_TYPE_STRUCT)
-    {
-        free_ffi_type_arr(typ->elements);
-        PyMem_Free(typ);
-    }
-}
-static void free_ffi_type_arr(ffi_type **arr)
-{
-    if (!arr) return;
-    for (int i = 0; arr[i]; ++i) free_ffi_type(arr[i]);
-    PyMem_Free(arr);
-}
-
-// The caller must call free_ffi_type on the result to free the returned type
-static ffi_type *ffi_type_for_uniqtype(const struct uniqtype *type)
-{
-    switch (UNIQTYPE_KIND(type))
-    {
-        case VOID:
-            return &ffi_type_void;
-        case ARRAY:
-        case ADDRESS:
-        case SUBPROGRAM:
-            return &ffi_type_pointer;
-        case ENUMERATION:
-            // Prefer the recorded underlying base type; when liballocs did not
-            // record one (the common case) fall back to a signed integer sized
-            // to the enum -- C enum constants have type int, so signed matches.
-            if (type->related[0].un.t.ptr)
-            {
-                type = type->related[0].un.t.ptr;
-                // fall through to BASE with the underlying integer type
-            }
-            else
-            {
-                unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
-                if (size == 1) return &ffi_type_sint8;
-                if (size == 2) return &ffi_type_sint16;
-                if (size == 4) return &ffi_type_sint32;
-                if (size == 8) return &ffi_type_sint64;
-                return NULL;
-            }
-            // fall through
-        case BASE:
-        {
-            unsigned size = UNIQTYPE_SIZE_IN_BYTES(type);
-            switch (type->un.base.enc)
-            {
-                case DW_ATE_boolean:
-                    return &ffi_type_uint8;
-                case DW_ATE_address:
-                case DW_ATE_unsigned:
-                case DW_ATE_unsigned_char:
-                    if (size == 1) return &ffi_type_uint8;
-                    if (size == 2) return &ffi_type_uint16;
-                    if (size == 4) return &ffi_type_uint32;
-                    if (size == 8) return &ffi_type_uint64;
-                    return NULL;
-                case DW_ATE_signed:
-                case DW_ATE_signed_char:
-                    if (size == 1) return &ffi_type_sint8;
-                    if (size == 2) return &ffi_type_sint16;
-                    if (size == 4) return &ffi_type_sint32;
-                    if (size == 8) return &ffi_type_sint64;
-                    return NULL;
-                case DW_ATE_float:
-                    if (size == 4) return &ffi_type_float;
-                    if (size == 8) return &ffi_type_double;
-                    if (size == 16) return &ffi_type_longdouble;
-                    return NULL;
-#ifdef FFI_TARGET_HAS_COMPLEX_TYPE
-                case DW_ATE_complex_float:
-                    if (size == 8) return &ffi_type_complex_float;
-                    if (size == 16) return &ffi_type_complex_double;
-                    if (size == 32) return &ffi_type_complex_longdouble;
-                    return NULL;
-#endif
-                default:
-                    return NULL;
-            }
-        }
-        case COMPOSITE:
-        {
-            // We must compute and store the ffi_type's of the struct fields
-            // This is required to comply with complicated ABI rules like in
-            // AMD64 ELF ABI.
-
-            int nb_fields = type->un.composite.nmemb;
-            ffi_type **field_ffi_types = PyMem_Malloc((1+nb_fields) * sizeof(ffi_type *));
-            for (int i = 0; i < nb_fields; ++i)
-            {
-                field_ffi_types[i] = ffi_type_for_uniqtype(type->related[i].un.t.ptr);
-                if (!field_ffi_types[i])
-                {
-                    free_ffi_type_arr(field_ffi_types);
-                    return NULL;
-                }
-            }
-            field_ffi_types[nb_fields] = NULL;
-
-            ffi_type *ffityp = PyMem_Malloc(sizeof(ffi_type));
-            *ffityp = (ffi_type){
-                .type = FFI_TYPE_STRUCT,
-                .elements = field_ffi_types,
-            };
-
-            // v The line below requires a recent version of libffi v
-            //if (ffi_get_struct_offsets(FFI_DEFAULT_ABI, ffityp) != FFI_OK)
-            ffi_cif dummy;
-            if (ffi_prep_cif(&dummy, FFI_DEFAULT_ABI, 0, ffityp, NULL) != FFI_OK)
-            {
-                free_ffi_type(ffityp);
-                return NULL;
-            }
-
-            // We may have to patch size and alignment to handle unions
-            if (ffityp->size != UNIQTYPE_SIZE_IN_BYTES(type))
-            {
-                ffityp->size = UNIQTYPE_SIZE_IN_BYTES(type);
-                // Be conservative about alignment if size is modified
-                for (int i = 0; i < nb_fields; ++i)
-                {
-                    if (field_ffi_types[i]->alignment > ffityp->alignment)
-                    {
-                        ffityp->alignment = field_ffi_types[i]->alignment;
-                    }
-                }
-            }
-
-            return ffityp;
-        }
-        case SUBRANGE:
-        default:
-            return NULL; // not handled
-    }
-}
 
 /* funproxytype_setup returns a negative value and sets a Python exception
  * on failure */
@@ -178,7 +39,8 @@ static int funproxytype_setup(FunctionProxyTypeObject *self)
     unsigned narg = type->un.subprogram.narg;
     if (narg > 0)
     {
-        ffi_arg_types = PyMem_Malloc((1+narg) * sizeof(ffi_type *));
+        /* plain malloc: released via the common free_ffi_type_arr (free) */
+        ffi_arg_types = malloc((1+narg) * sizeof(ffi_type *));
         self->ff_argtypes = PyMem_Malloc((1+narg) * sizeof(ForeignTypeObject *));
 
         ffi_arg_types[narg] = NULL;

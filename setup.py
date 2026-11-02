@@ -21,12 +21,19 @@ if use_allocscc:
 
 DEBUG = environ.get('DEBUG')
 
+# The CPython extension lives in vmextensions/cpython; VM-agnostic code shared
+# with the other VM extensions (minicrunch, dlsym_iter, ffitypes) in
+# vmextensions/common.
+CPYTHON_EXT = ROOT / 'vmextensions/cpython'
+VMEXT_COMMON = ROOT / 'vmextensions/common'
+
 INCLUDE_PATHS = list(map(str, [
     LIBALLOCS / 'include',
     LIBALLOCS / 'contrib/libsystrap/contrib/librunt/include',
     LIBALLOCS / 'contrib/liballocstool/include',
     STACKSCAN / 'include',  # handle_query.h: translate-then-index liballocs glue
-    ROOT / 'include'
+    CPYTHON_EXT,
+    VMEXT_COMMON,
 ]))
 
 LIBRARY_PATHS = list(map(str, [
@@ -94,7 +101,7 @@ if environ.get('SPECIALISE_CONVERSION'):
         '-DPYCALLOCS_SPECIALISE_CONVERSION',
         '-DPYCALLOCS_TRANSLATE_CXX="g++-16"',
         '-std=gnu23',
-        f'--embed-dir={ROOT / "contrib/linkpy/include"}',
+        f'--embed-dir={ROOT / "linker/cpython"}',
     ]
 
 # DRAFT alternative to SPECIALISE_CONVERSION: synthesise the same translators via
@@ -108,8 +115,8 @@ elif environ.get('INJECT_CONVERSION'):
         '-DPYCALLOCS_INJECT_CONVERSION',
         '-DPYCALLOCS_TRANSLATE_CXX="g++-16"',
         '-std=gnu23',
-        f'--embed-dir={ROOT / "contrib/linkpy/include"}',  # pycpputils.hpp
-        f'--embed-dir={ROOT / "include"}',                 # pyc_inject.hpp
+        f'--embed-dir={ROOT / "linker/cpython"}',        # pycpputils.hpp
+        f'--embed-dir={ROOT / "vmextensions/cpython"}',  # pyc_inject.hpp
     ]
 
 # Add RPATH so the module can find liballocs (and libalaska, when enabled) at runtime
@@ -124,7 +131,8 @@ allocs = Extension('allocs',
                    include_dirs = INCLUDE_PATHS,
                    libraries = ['dl', 'ffi', 'allocs'] + extra_libraries,
                    library_dirs = LIBRARY_PATHS,
-                   sources = [str(p) for p in sorted((ROOT / 'src').glob('*.c'))],
+                   sources = [str(p) for p in
+                              sorted(CPYTHON_EXT.glob('*.c')) + sorted(VMEXT_COMMON.glob('*.c'))],
                    extra_objects = extra_objects,
                    extra_compile_args = compile_args,
                    extra_link_args = link_args,

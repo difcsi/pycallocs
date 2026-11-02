@@ -5,8 +5,8 @@
 #include <liballocs.h>
 #include <stdbool.h>
 #include <minicrunch.h>
-// Route every address-indexed liballocs query through stackscan's
-// translate-then-index glue: an Alaska handle (non-canonical, bit 63 set) must
+// Route every address-indexed liballocs query through the
+// translate-then-index glue (vmextensions/common): an Alaska handle (non-canonical, bit 63 set) must
 // be translated to its backing pointer before any liballocs lookup, otherwise
 // the query indexes a top-bit-set address and faults. ss_translate() is a no-op
 // on non-handles, so wrapping every pointer is always safe.

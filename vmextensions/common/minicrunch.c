@@ -5,10 +5,10 @@
 
 #include <stddef.h>
 #include <stdio.h>   /* fprintf for diagnostics */
-#include "liballocs.h"
+#include <liballocs.h>
 #include <limits.h>
 #include <uniqtype-defs.h>
-#include <minicrunch.h>
+#include "minicrunch.h"
 
 /* NB: we deliberately do NOT include liballocs_private.h. Its debug_printf macro
  * relies on liballocs-internal, hidden-visibility helpers (get_exe_command_basename
