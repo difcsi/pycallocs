@@ -59,3 +59,42 @@ else()
     message(STATUS "linkpy: by-reference (ptr_arg) test disabled; "
                    "-DLINKPY_BYREF_TESTS=ON (with liballocs paths) to enable")
 endif()
+
+# bytes_array: fixed-size char/unsigned char arrays inside by-value structs
+# cross as Python bytes in both directions (embedded NULs survive; the
+# Python -> C copy is zero-filled so C sees a NUL-terminated char[N]).
+add_linkpy_test(bytes_array LANG python)
+# str_field: char* / const char* FIELDS of a by-value struct arrive in Python
+# as str (NULL -> None), the same mapping top-level char* arguments get.
+add_linkpy_test(str_field LANG python)
+
+# The auditor and the linkstub stay quiet unless debugging is requested: a
+# long-running host (a web server) cannot afford a line printed per call.
+set_tests_properties(python_simple_divide PROPERTIES
+    FAIL_REGULAR_EXPRESSION "Hello from (divide|phelloworld)!|PyVM Initialized|Running function|Linker looked for libinit")
+
+# gil_release: a Python thread started in one trampoline call keeps running
+# while C works between calls, i.e. the linkstub parks the GIL when idle.
+add_linkpy_test(gil_release LANG python)
+
+# linkstub_cache: the compiled linkstub is cached by content hash, so a second
+# process loading the same init library never invokes the compiler.
+get_test_property(python_simple_divide ENVIRONMENT _simple_divide_env)
+add_test(NAME python_linkstub_cache
+    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/check_linkstub_cache.sh"
+            $<TARGET_FILE:python_simple_divide_main>)
+set_tests_properties(python_linkstub_cache PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/simple_divide"
+    ENVIRONMENT "${_simple_divide_env}")
+
+# environ_moved: the host rewrites its environment strings (process-title
+# style) before loading the init library; the auditor must have captured its
+# settings at process start.
+add_linkpy_test(environ_moved LANG python DLOPEN)
+
+# env_after_load: the host sets PYTHONPATH only after loading the init
+# library, so the linkstub's interpreter must start at the first call, not
+# at load time (the module is only reachable through that PYTHONPATH).
+add_linkpy_test(env_after_load LANG python DLOPEN)
+set_property(TEST python_env_after_load APPEND PROPERTY ENVIRONMENT
+    "LATE_MODULE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/env_after_load/elsewhere")

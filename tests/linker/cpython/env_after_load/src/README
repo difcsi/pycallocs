@@ -1,0 +1,2 @@
+Deliberately no late.py here: the module lives in ../elsewhere, reachable only
+through the PYTHONPATH main.c sets after loading the init library.
