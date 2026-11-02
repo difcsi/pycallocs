@@ -1,4 +1,4 @@
-# Drive builds of third-party subprojects: cpython, stackscan (+ liballocs, alaska), linkpy.
+# Drive builds of third-party subprojects: cpython, stackscan (+ liballocs, alaska).
 # Path variables and validation live in the root CMakeLists.txt; only build targets
 # and their dep-target lists are set here and propagated up via PARENT_SCOPE.
 
@@ -54,22 +54,3 @@ if(BUILD_STACKSCAN)
     endforeach()
 endif()
 set(_STACKSCAN_DEP_TARGETS "${_STACKSCAN_DEP_TARGETS}" PARENT_SCOPE)
-
-# ---------------------------------------------------------------------------
-# linkpy (build from source only when audit.so is absent)
-# ---------------------------------------------------------------------------
-set(_LINKPY_BUILD_TARGET "")
-if(NOT EXISTS "${LINKPY_AUDIT_SO}")
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/linkpy/CMakeLists.txt")
-        message(FATAL_ERROR
-            "linkpy not found at ${CMAKE_CURRENT_SOURCE_DIR}/linkpy and "
-            "${LINKPY_AUDIT_SO} is missing.\n"
-            "Initialise the submodule: git submodule update --init contrib/linkpy")
-    endif()
-    message(STATUS "linkpy: audit.so not found — building from source")
-    add_subdirectory(linkpy)
-    set(_LINKPY_BUILD_TARGET audit)
-else()
-    message(STATUS "linkpy: using pre-built ${LINKPY_AUDIT_SO}")
-endif()
-set(_LINKPY_BUILD_TARGET "${_LINKPY_BUILD_TARGET}" PARENT_SCOPE)

@@ -19,7 +19,7 @@ LA="$ROOT/contrib/stackscan/contrib/liballocs"
 BUILD="${PYCALLOCS_BUILD_DIR:-$ROOT/build}"
 
 export LD_PRELOAD="$LA/lib/liballocs_preload.so:$BUILD/basetypes/libbasetypes_provider.so"
-export LD_AUDIT="$ROOT/contrib/linkpy/dist/audit.so"
+export LD_AUDIT="$ROOT/linker/dist/audit.so"
 export LD_LIBRARY_PATH="$LA/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export GLIBC_TUNABLES="glibc.rtld.optional_static_tls=524288"
 export PYTHONPATH="$ROOT:$HERE${PYTHONPATH:+:$PYTHONPATH}"

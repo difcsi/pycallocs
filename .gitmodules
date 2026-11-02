@@ -1,6 +1,3 @@
-[submodule "contrib/linkpy"]
-	path = contrib/linkpy
-	url = git@github.com:difcsi/linkpy.git
 [submodule "contrib/cpython"]
 	path = contrib/cpython
 	url = git@github.com:difcsi/cpython.git

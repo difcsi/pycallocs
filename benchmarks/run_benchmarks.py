@@ -55,7 +55,7 @@ def discover_paths(build_dir):
         "liballocs_lib": os.path.join(la, "lib"),
         "preload": os.path.join(la, "lib", "liballocs_preload.so"),
         "basetypes": os.path.join(build_dir, "basetypes", "libbasetypes_provider.so"),
-        "audit": os.path.join(ROOT, "contrib", "linkpy", "dist", "audit.so"),
+        "audit": os.path.join(ROOT, "linker", "dist", "audit.so"),
     }
 
 

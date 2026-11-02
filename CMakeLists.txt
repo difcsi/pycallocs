@@ -35,21 +35,38 @@ option(BUILD_BENCHMARKS
 
 # ---------------------------------------------------------------------------
 # Paths: stackscan and linkpy
-# (must be set before add_subdirectory(contrib) so contrib can read them)
+# (STACKSCAN_DIR must be set before add_subdirectory(contrib) so contrib can
+# read it; linkpy is first-party code living in linker/)
 # ---------------------------------------------------------------------------
 set(STACKSCAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/stackscan"
     CACHE PATH "stackscan submodule root")
 
-set(LINKPY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/linkpy"
-    CACHE PATH "linkpy root")
+set(LINKPY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/linker"
+    CACHE PATH "linkpy (linker) root")
 set(LINKPY_AUDIT_SO "${LINKPY_DIR}/dist/audit.so")
 
 # ---------------------------------------------------------------------------
-# Third-party builds: stackscan and linkpy
+# Third-party builds: cpython and stackscan
 # contrib/CMakeLists.txt drives add_subdirectory for each subproject and
-# exports _STACKSCAN_DEP_TARGETS and _LINKPY_BUILD_TARGET to this scope.
+# exports _STACKSCAN_DEP_TARGETS and _CPYTHON_DEP_TARGET to this scope.
 # ---------------------------------------------------------------------------
 add_subdirectory(contrib)
+
+# ---------------------------------------------------------------------------
+# linkpy (linker/ — build from source only when audit.so is absent)
+# ---------------------------------------------------------------------------
+set(_LINKPY_BUILD_TARGET "")
+if(NOT EXISTS "${LINKPY_AUDIT_SO}")
+    if(NOT EXISTS "${LINKPY_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "linkpy not found at ${LINKPY_DIR} and ${LINKPY_AUDIT_SO} is missing.")
+    endif()
+    message(STATUS "linkpy: audit.so not found — building from source")
+    add_subdirectory("${LINKPY_DIR}" linkpy)
+    set(_LINKPY_BUILD_TARGET audit)
+else()
+    message(STATUS "linkpy: using pre-built ${LINKPY_AUDIT_SO}")
+endif()
 
 # ---------------------------------------------------------------------------
 # liballocs (pre-built, owned by stackscan)

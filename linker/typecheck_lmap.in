@@ -1,0 +1,3 @@
+mod:add:int:int:a:int:b
+mod:make_point:struct Point:int:x:int:y
+mod:bump:void:struct Point *:p

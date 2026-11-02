@@ -1,0 +1,7 @@
+*.so
+*.o
+__pycache__
+.antlr
+gen
+dist
+build
