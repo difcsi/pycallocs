@@ -1,0 +1,6 @@
+26 10
+5
+<foreign type 'int$$32'>
+<foreign type 'float$$64'>
+<foreign type 'signed_char$$8'>
+has __unsupported: true
