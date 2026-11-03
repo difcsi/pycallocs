@@ -299,6 +299,18 @@ See the `python_bytes_array` and `python_str_field` tests.
   skips its load-time check that the Python module defines every stub function;
   a missing one surfaces at call time instead.
 
+## Benchmarks
+
+Two fixtures under `tests/linker/cpython/` measure what a call costs and run as
+ordinary tests (they pass on exit code): `python_bench_divide` is the fixed cost
+of one trampoline call (two ints in, a float out), `python_bench_structs` the
+by-value structs carrying fixed-capacity arrays in both directions (a 64 KiB
+`chunk` in and out, a 32 KiB header block with a nested struct out) and a flat
+struct of strings as an argument. `ctest -R python_bench -V` prints one
+`bench <shape>: <µs> us/call` line per shape; `LINKPY_BENCH_CALLS` sets the
+iteration count. Numbers depend on the machine and on the `-O` level of
+`LINKSTUB_BUILD_CMD`, so compare runs made the same way, pinned to one core.
+
 ## TODOS
 
 * `pyhgen.py` covers scalars + by-value local-class structs; container/typing

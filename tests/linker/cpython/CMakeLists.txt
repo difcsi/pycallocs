@@ -68,6 +68,14 @@ add_linkpy_test(bytes_array LANG python)
 # as str (NULL -> None), the same mapping top-level char* arguments get.
 add_linkpy_test(str_field LANG python)
 
+# Benchmarks, run as ordinary tests (they pass on exit code and print their
+# numbers; see them with `ctest -R python_bench -V`, LINKPY_BENCH_CALLS sets the
+# iteration count). bench_divide is the fixed cost of one trampoline call;
+# bench_structs the by-value structs carrying fixed-capacity arrays in both
+# directions plus a flat struct of strings as an argument.
+add_linkpy_test(bench_divide LANG python)
+add_linkpy_test(bench_structs LANG python)
+
 # The auditor and the linkstub stay quiet unless debugging is requested: a
 # long-running host (a web server) cannot afford a line printed per call.
 set_tests_properties(python_simple_divide PROPERTIES
