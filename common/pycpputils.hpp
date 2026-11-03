@@ -322,17 +322,33 @@ PyObject *arg_to_PyObject(const T &value)
     }
 }
 
-// Marshal each C argument into a Python tuple. arg_to_PyObject routes pointer
-// arguments through a pycallocs proxy and everything else through the
-// reflection-aware T_to_PyObject. PyTuple_SetItem steals the reference each
-// branch hands back, so nothing leaks.
-template <typename... Args>
-static PyObject *pack_args(Args... args)
+// The arguments of one call as the array the vectorcall protocol takes: slot
+// 0 is the one PY_VECTORCALL_ARGUMENTS_OFFSET lets the callee use, the
+// references in the rest are owned here and dropped on the way out, whether
+// the call returned or an argument's conversion threw.
+template <std::size_t N>
+struct ArgArray
 {
-    PyObject *pArgs = PyTuple_New(sizeof...(args));
-    [[maybe_unused]] Py_ssize_t idx = 0;
-    ((PyTuple_SetItem(pArgs, idx++, arg_to_PyObject(args))), ...);
-    return pArgs;
+    PyObject *slots[N + 1] = {};
+    ~ArgArray()
+    {
+        for (std::size_t i = 1; i <= N; i++)
+            Py_XDECREF(slots[i]);
+    }
+    PyObject **args() { return slots + 1; }
+    ArgArray() = default;
+    ArgArray(const ArgArray &) = delete;
+    ArgArray &operator=(const ArgArray &) = delete;
+};
+
+// Marshal each C argument into the argument array. arg_to_PyObject routes
+// pointer arguments through a pycallocs proxy and everything else through the
+// reflection-aware T_to_PyObject.
+template <typename... Args>
+static void pack_argv(PyObject **out, Args... args)
+{
+    [[maybe_unused]] std::size_t idx = 0;
+    ((out[idx++] = arg_to_PyObject(args)), ...);
 }
 
 // Holds the GIL for one trampoline call. The linkstub parks the GIL once the
@@ -358,9 +374,12 @@ void run_function_void(CallSite &site, int argc, Args... args)
     PyObject *pModule = nullptr;
     PyObject *pFunc = resolve_callable(site, &pModule);
 
-    PyObject *pArgs = pack_args(args...);
-    PyObject *pValue = call_function(pFunc, pArgs);
-    Py_DECREF(pArgs);
+    ArgArray<sizeof...(Args)> argv;
+    pack_argv(argv.args(), args...);
+    PyObject *pValue = PyObject_Vectorcall(pFunc, argv.args(),
+                                           sizeof...(Args) | PY_VECTORCALL_ARGUMENTS_OFFSET, nullptr);
+    if (pValue == NULL)
+        PyErr_Print();
     Py_XDECREF(pValue);
 
     Py_DECREF(pFunc);
@@ -379,9 +398,10 @@ T run_function(CallSite &site, int argc, Args... args)
     PyObject *pModule = nullptr;
     PyObject *pFunc = resolve_callable(site, &pModule);
 
-    PyObject *pArgs = pack_args(args...);
-    PyObject *pValue = call_function(pFunc, pArgs);
-    Py_DECREF(pArgs);
+    ArgArray<sizeof...(Args)> argv;
+    pack_argv(argv.args(), args...);
+    PyObject *pValue = PyObject_Vectorcall(pFunc, argv.args(),
+                                           sizeof...(Args) | PY_VECTORCALL_ARGUMENTS_OFFSET, nullptr);
     if (pValue == NULL)
     {
         PyErr_Print();
