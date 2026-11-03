@@ -76,6 +76,11 @@ add_linkpy_test(str_field LANG python)
 add_linkpy_test(bench_divide LANG python)
 add_linkpy_test(bench_structs LANG python)
 
+# rebind: each call sees the module as it is at that moment -- a function
+# rebound in the module's namespace (what importlib.reload does) and a module
+# object replaced in sys.modules -- so the callable may not be kept across calls.
+add_linkpy_test(rebind LANG python)
+
 # The auditor and the linkstub stay quiet unless debugging is requested: a
 # long-running host (a web server) cannot afford a line printed per call.
 set_tests_properties(python_simple_divide PROPERTIES
