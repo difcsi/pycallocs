@@ -5,6 +5,7 @@
 #include <string>
 #include <stdexcept>
 #include <cstring>
+#include <iostream>
 
 // Everything lives in linkpy::py so a cross-language linkstub TU can include
 // this header together with luacpputils.hpp (linkpy::lua) without the
@@ -19,6 +20,27 @@ PyObject *import_module(const char *name);
 PyObject *import_function(PyObject *module, const char *name);
 PyObject *call_function(PyObject *pFunc, PyObject *args);
 void init_py();
+
+// One record per generated trampoline, defined `static` inside it with the
+// module and function names it was generated with. The marshaller adds the
+// interned Python strings for them on the first call (under the GIL, which
+// every marshalling caller holds), so later calls resolve the callable with
+// two dictionary lookups instead of a full import.
+struct CallSite
+{
+    const char *module;
+    const char *function;
+    PyObject *module_name;    // interned, nullptr until the first call
+    PyObject *function_name;  // interned, nullptr until the first call
+};
+
+// The callable of a call site as a new reference, with a new reference to
+// its module in *module_out. It is the live sys.modules entry (imported on
+// the first call, or again if something dropped it) and the live attribute,
+// so a function rebound by importlib.reload() or a module object replaced in
+// sys.modules is what the next call gets. Prints the Python error and throws
+// std::runtime_error when the module or the function is missing.
+PyObject *resolve_callable(CallSite &site, PyObject **module_out);
 
 // Wrap a raw C pointer in a pycallocs proxy via allocs.proxy_from_address.
 // Returns a NEW reference, or NULL with a Python exception set.
@@ -325,25 +347,16 @@ struct GilGuard
 };
 
 template <typename... Args>
-void run_function_void(const std::string &module, const std::string &function, int argc, Args... args)
+void run_function_void(CallSite &site, int argc, Args... args)
 {
+    (void) argc;
     ensure_vm();
     GilGuard gil;
 #ifdef DEBUG
-    std::cout << "Running function " << function << " from module " << module << " with " << argc << " arguments" << std::endl;
+    std::cout << "Running function " << site.function << " from module " << site.module << " with " << argc << " arguments" << std::endl;
 #endif
-    PyObject *pModule = import_module(module.c_str());
-    if (pModule == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import module");
-    }
-    PyObject *pFunc = import_function(pModule, function.c_str());
-    if (pFunc == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import function");
-    }
+    PyObject *pModule = nullptr;
+    PyObject *pFunc = resolve_callable(site, &pModule);
 
     PyObject *pArgs = pack_args(args...);
     PyObject *pValue = call_function(pFunc, pArgs);
@@ -355,25 +368,16 @@ void run_function_void(const std::string &module, const std::string &function, i
 }
 
 template <typename T, typename... Args>
-T run_function(const std::string &module, const std::string &function, int argc, Args... args)
+T run_function(CallSite &site, int argc, Args... args)
 {
+    (void) argc;
     ensure_vm();
     GilGuard gil;
 #ifdef DEBUG
-    std::cout << "Running function " << function << " from module " << module << " with " << argc << " arguments" << std::endl;
+    std::cout << "Running function " << site.function << " from module " << site.module << " with " << argc << " arguments" << std::endl;
 #endif
-    PyObject *pModule = import_module(module.c_str());
-    if (pModule == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import module");
-    }
-    PyObject *pFunc = import_function(pModule, function.c_str());
-    if (pFunc == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import function");
-    }
+    PyObject *pModule = nullptr;
+    PyObject *pFunc = resolve_callable(site, &pModule);
 
     PyObject *pArgs = pack_args(args...);
     PyObject *pValue = call_function(pFunc, pArgs);

@@ -227,4 +227,24 @@ T run_function(const std::string &module, const std::string &function,
     return result;
 }
 
+// The per-trampoline record gen_code emits for both languages (the shape of
+// linkpy::py::CallSite's leading members); here it only carries the names.
+struct CallSite
+{
+    const char *module;
+    const char *function;
+};
+
+template <typename... Args>
+void run_function_void(const CallSite &site, int argc, Args... args)
+{
+    run_function_void(std::string(site.module), std::string(site.function), argc, args...);
+}
+
+template <typename T, typename... Args>
+T run_function(const CallSite &site, int argc, Args... args)
+{
+    return run_function<T>(std::string(site.module), std::string(site.function), argc, args...);
+}
+
 } // namespace linkpy::lua
