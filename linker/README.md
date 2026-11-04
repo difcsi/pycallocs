@@ -292,8 +292,9 @@ See the `python_bytes_array` and `python_str_field` tests.
   (`python_gil_release`).
 * **Cache.** The compiled `liblinkstub.so` is cached under
   `$LINKPY_CACHE_DIR` (empty disables), else `$XDG_CACHE_HOME/linkpy`, else
-  `~/.cache/linkpy`, keyed by a SHA-256 of the auditor binary, the template(s),
-  the stub library's DWARF and the build command. A second process with the
+  `~/.cache/linkpy`, keyed by a SHA-256 of the auditor's build-id (its binary's
+  contents when it carries none), the template(s), the stub library's DWARF and
+  the build command. A second process with the
   same inputs (a forked app server, a restarted test) loads the cached file and
   never runs the compiler (`python_linkstub_cache`). On a hit the auditor also
   skips its load-time check that the Python module defines every stub function;
