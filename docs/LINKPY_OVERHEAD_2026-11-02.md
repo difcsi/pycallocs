@@ -457,6 +457,19 @@ too, out of scope per `LINKPY_NOTES.md`) and `test_python_application_path` (its
 `environment` override drops the wrapper's `PYTHONPATH`, and the base lacks the
 module-beside-libinit feature that makes it unnecessary). Adapter tests 48/48.
 
+### Review fix pass
+
+The whole-branch review found no critical issue and three to fix before merging, each
+now with a fixture that failed first: the suite could not see a marshaller edit on a
+warm cache (the tests' build command now carries a hash of the marshaller sources,
+`-DLINKPY_MARSHALLER=<sha>`, so the key changes with them); the rewritten templates
+leaked the module and function references on every throw path (`python_marshaller_refs`,
+a C++ host catching the exception: reference counts 10 → 110 over 50 raising calls before,
+unchanged after); and padded by-value results carried stack garbage in their padding
+where the toolchain's zero-initialisation used to clear it (`python_padded`;
+`has_padding<T>()` clears such results first, padding-free ones are still written
+once). The suite is 36 tests.
+
 ### Rejected, unchanged from sections 2 and 3
 
 Keeping the callable across calls (0.05–0.1 µs, breaks `importlib.reload`; pinned by

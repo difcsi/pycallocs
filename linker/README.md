@@ -294,7 +294,9 @@ See the `python_bytes_array` and `python_str_field` tests.
   `$LINKPY_CACHE_DIR` (empty disables), else `$XDG_CACHE_HOME/linkpy`, else
   `~/.cache/linkpy`, keyed by a SHA-256 of the auditor's build-id (its binary's
   contents when it carries none), the template(s), the stub library's DWARF and
-  the build command. A second process with the
+  the build command. The marshaller sources that command compiles are not in
+  the key: after editing them, clear the cache or put their hash into the
+  command, as the tests do (`-DLINKPY_MARSHALLER=<sha>`, see `tests.cmake`). A second process with the
   same inputs (a forked app server, a restarted test) loads the cached file and
   never runs the compiler (`python_linkstub_cache`). On a hit the auditor also
   skips its load-time check that the Python module defines every stub function;

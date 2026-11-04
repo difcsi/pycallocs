@@ -31,6 +31,23 @@ set(LINKPY_LUA_TEMPLATE "${LINKPY_ROOT}/lua/template_lua.cpp")
 # Shared, language-agnostic lmap-mode check (driven with -DTOOL/-DSRC).
 set(LINKPY_LMAP_CHECK "${LINKPY_TESTS_DIR}/check_typecheck_lmap.cmake")
 
+# The linkstub cache key covers the auditor, the templates, the stub DWARF and
+# the build command, but not the marshaller sources that command compiles. The
+# tests put a hash of those sources into the command (a define the code never
+# reads), so an edited marshaller never runs against a stale cached linkstub;
+# CMake re-runs when the files change, so the hash follows every edit.
+function(linkpy_marshaller_hash out)
+    set(_acc "")
+    foreach(f ${ARGN})
+        file(SHA256 "${f}" _h)
+        string(APPEND _acc "${_h}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${f}")
+    endforeach()
+    string(SHA256 _key "${_acc}")
+    string(SUBSTRING "${_key}" 0 16 _key)
+    set(${out} "${_key}" PARENT_SCOPE)
+endfunction()
+
 # Extra system libs needed to embed CPython, as a space-separated string for use
 # inside the runtime compile command.
 string(JOIN " " PY_SYSLIBS_STR ${PY_SYSLIBS})
@@ -61,6 +78,7 @@ function(add_linkpy_test name)
         set(audit_lib audit_lua)
         set(template "${LINKPY_LUA_TEMPLATE}")
         set(marshal_src "${LINKPY_ROOT}/lua/luacpputils.cpp")
+        set(marshal_hdr "${LINKPY_ROOT}/lua/luacpputils.hpp")
         set(lang_dir "${LINKPY_ROOT}/lua")
         set(lang_cflags "${LUA_CFLAGS_STR}")
         set(lang_libs "${LUA_LDFLAGS_STR}")
@@ -70,6 +88,7 @@ function(add_linkpy_test name)
         set(audit_lib audit)
         set(template "${LINKPY_TEMPLATE}")
         set(marshal_src "${LINKPY_ROOT}/cpython/pycpputils.cpp")
+        set(marshal_hdr "${LINKPY_ROOT}/../common/pycpputils.hpp")
         set(lang_dir "${LINKPY_ROOT}/cpython")
         set(lang_cflags "-I${PY_INCLUDE} -I${PY_PLATINCLUDE}")
         set(lang_libs "${PYTHON_LIB} ${PY_SYSLIBS_STR}")
@@ -162,9 +181,11 @@ function(add_linkpy_test name)
     # liblinkstub.so, against the language's marshalling source + libs. Both are
     # named by bare filename: the auditor cd's into its private temp work dir
     # (where it wrote linkstub.cpp) before running this, so the output lands there.
+    linkpy_marshaller_hash(marshaller_sha "${marshal_src}" "${marshal_hdr}")
     set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${marshal_src} \
--I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
+-I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs} \
+-DLINKPY_MARSHALLER=${marshaller_sha}")
 
     add_test(NAME ${test_name} COMMAND ${test_name}_main)
     set_tests_properties(${test_name} PROPERTIES
@@ -266,6 +287,7 @@ function(add_linkpy_byref_test name)
         set(audit_lib audit_lua)
         set(template "${LINKPY_LUA_TEMPLATE}")
         set(marshal_src "${LINKPY_ROOT}/lua/luacpputils.cpp")
+        set(marshal_hdr "${LINKPY_ROOT}/lua/luacpputils.hpp")
         set(lang_dir "${LINKPY_ROOT}/lua")
         set(lang_cflags "${LUA_CFLAGS_STR}")
         set(lang_libs "${LUA_LDFLAGS_STR}")
@@ -276,6 +298,7 @@ function(add_linkpy_byref_test name)
         set(audit_lib audit)
         set(template "${LINKPY_TEMPLATE}")
         set(marshal_src "${LINKPY_ROOT}/cpython/pycpputils.cpp")
+        set(marshal_hdr "${LINKPY_ROOT}/../common/pycpputils.hpp")
         set(lang_dir "${LINKPY_ROOT}/cpython")
         set(lang_cflags "-I${PY_INCLUDE} -I${PY_PLATINCLUDE}")
         set(lang_libs "${PYTHON_LIB} ${PY_SYSLIBS_STR}")
@@ -328,9 +351,11 @@ function(add_linkpy_byref_test name)
         VERBATIM)
     add_custom_target(${test_name}_main ALL DEPENDS "${main_exe}")
 
+    linkpy_marshaller_hash(marshaller_sha "${marshal_src}" "${marshal_hdr}")
     set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${marshal_src} \
--I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
+-I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs} \
+-DLINKPY_MARSHALLER=${marshaller_sha}")
 
     add_test(NAME ${test_name} COMMAND "${main_exe}")
     set_tests_properties(${test_name} PROPERTIES
@@ -474,10 +499,12 @@ function(add_linkpy_cross_test name)
         set(byref_env ";LINKPY_CROSS_BYREF=1;LD_PRELOAD=${LINKPY_LIBALLOCS_PRELOAD}:${LINKPY_BASETYPES_PROVIDER};LD_LIBRARY_PATH=${LINKPY_LIBALLOCS_DIR}/lib;GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288;META_BASE=${byref_meta};LUA_CPATH=${LINKPY_LUAPROXY_DIR}/?.so")
     endif()
 
+    linkpy_marshaller_hash(marshaller_sha "${LINKPY_ROOT}/cpython/pycpputils.cpp" "${LINKPY_ROOT}/../common/pycpputils.hpp"
+                                          "${LINKPY_ROOT}/lua/luacpputils.cpp" "${LINKPY_ROOT}/lua/luacpputils.hpp")
     set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${LINKPY_ROOT}/cpython/pycpputils.cpp ${LINKPY_ROOT}/lua/luacpputils.cpp \
 -I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${LINKPY_ROOT}/cpython -I${LINKPY_ROOT}/lua \
--I${include_dir} ${callee_flags} ${host_flags} ${callee_libs}")
+-I${include_dir} ${callee_flags} ${host_flags} ${callee_libs} -DLINKPY_MARSHALLER=${marshaller_sha}")
 
     add_test(NAME ${test_name} COMMAND ${run_cmd})
     set_tests_properties(${test_name} PROPERTIES
