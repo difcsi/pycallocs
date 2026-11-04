@@ -78,6 +78,22 @@ add_linkpy_test(str_field LANG python)
 add_linkpy_test(bench_divide LANG python)
 add_linkpy_test(bench_structs LANG python)
 
+# padded: a by-value result with padding between its members arrives with its
+# padding zero -- the C caller compares, hashes or writes the struct whole.
+add_linkpy_test(padded LANG python)
+
+# marshaller_refs: the marshaller driven directly by a C++ host that catches
+# its exceptions and keeps calling; a failed call (the function raises, an
+# argument cannot be converted) must not leak the module's or the function's
+# references. Links the marshaller and the VM template straight in, no auditor.
+add_executable(python_marshaller_refs marshaller_refs/main.cpp
+    "${LINKPY_ROOT}/cpython/pycpputils.cpp" "${LINKPY_ROOT}/cpython/template.cpp")
+target_include_directories(python_marshaller_refs PRIVATE
+    "${LINKPY_ROOT}/common" "${LINKPY_ROOT}/cpython" "${PYCALLOCS_COMMON_DIR}" ${PY_INCLUDES})
+target_link_libraries(python_marshaller_refs PRIVATE ${PYTHON_LIB} ${PY_SYSLIBS})
+add_test(NAME python_marshaller_refs COMMAND python_marshaller_refs
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/marshaller_refs")
+
 # rebind: each call sees the module as it is at that moment -- a function
 # rebound in the module's namespace (what importlib.reload does) and a module
 # object replaced in sys.modules -- so the callable may not be kept across calls.
