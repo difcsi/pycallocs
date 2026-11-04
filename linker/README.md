@@ -351,6 +351,9 @@ struct of strings as an argument. `ctest -R python_bench -V` prints one
 `bench <shape>: <µs> us/call` line per shape; `LINKPY_BENCH_CALLS` sets the
 iteration count. Numbers depend on the machine and on the `-O` level of
 `LINKSTUB_BUILD_CMD`, so compare runs made the same way, pinned to one core.
+The drivers under `tests/linker/bench/` do that: instructions per call under
+callgrind, interleaved timing rounds, a profiled cache-hit start, and NGINX
+Unit end to end against upstream or another LinkPy tree (see its README).
 
 ## TODOS
 
