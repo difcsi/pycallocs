@@ -44,6 +44,50 @@ PyObject *import_function(PyObject *module, const char *name)
         return NULL;
     }
 }
+PyObject *resolve_callable(CallSite &site, PyObject **module_out)
+{
+    if (site.module_name == nullptr)
+    {
+        site.module_name = PyUnicode_InternFromString(site.module);
+        site.function_name = PyUnicode_InternFromString(site.function);
+        if (site.module_name == nullptr || site.function_name == nullptr)
+        {
+            PyErr_Print();
+            throw std::runtime_error("Failed to intern the call site's names");
+        }
+    }
+    // The live sys.modules entry: a dictionary lookup, no import machinery.
+    // NULL without an error means "not imported": the first call, or the host
+    // dropped it, so import it the way import_module did. (A module that
+    // another thread is still initialising would be returned as is; calls
+    // come from the thread that loaded the library, under the GIL.)
+    PyObject *module = PyImport_GetModule(site.module_name);
+    if (module == nullptr)
+    {
+        if (PyErr_Occurred())
+        {
+            PyErr_Print();
+            throw std::runtime_error("Failed to import module");
+        }
+        module = PyImport_Import(site.module_name);
+        if (module == nullptr)
+        {
+            PyErr_Print();
+            throw std::runtime_error("Failed to import module");
+        }
+    }
+    PyObject *function = PyObject_GetAttr(module, site.function_name);
+    if (function == nullptr || !PyCallable_Check(function))
+    {
+        PyErr_Print();
+        Py_XDECREF(function);
+        Py_DECREF(module);
+        throw std::runtime_error("Failed to import function");
+    }
+    *module_out = module;
+    return function;
+}
+
 PyObject *call_function(PyObject *pFunc, PyObject *args)
 {
     PyObject *pValue;

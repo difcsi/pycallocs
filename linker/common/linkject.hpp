@@ -121,17 +121,20 @@ consteval void inject_stubs(std::string_view desc)
 
             const std::size_t argc = fn.params.size();
 
-            // run_function_void("mod","name",argc, p0, ...)  for void returns,
-            // else  return run_function<RET>("mod","name",argc, p0, ...).
-            // \(fn.module) / \(fn.name) interpolate the names as string literals;
-            // \(argc) the arity as an integer literal. Qualified linkpy::py:: to
-            // match the namespaced marshaller; a Lua variant of this draft back
-            // end would need the qualifier parameterized like gen_code's
-            // CALLEE_NS (this path is Python-only today).
+            // static CallSite site{"mod","name"}; run_function_void(site, argc, p0, ...)
+            // for void returns, else return run_function<RET>(site, argc, p0, ...),
+            // the same shape gen_code prints. \(fn.module) / \(fn.name)
+            // interpolate the names as string literals; \(argc) the arity as an
+            // integer literal. Qualified linkpy::py:: to match the namespaced
+            // marshaller; a Lua variant of this draft back end would need the
+            // qualifier parameterized like gen_code's CALLEE_NS (this path is
+            // Python-only today).
             std::meta::info call = (fn.ret == "void")
-                ? ^^{ linkpy::py::run_function_void(\(fn.module), \(fn.name), \(argc) \tokens(fwd)); }
-                : ^^{ return linkpy::py::run_function<\tokens(type_tokens(fn.ret))>(
-                          \(fn.module), \(fn.name), \(argc) \tokens(fwd)); };
+                ? ^^{ static linkpy::py::CallSite site{\(fn.module), \(fn.name)};
+                      linkpy::py::run_function_void(site, \(argc) \tokens(fwd)); }
+                : ^^{ static linkpy::py::CallSite site{\(fn.module), \(fn.name)};
+                      return linkpy::py::run_function<\tokens(type_tokens(fn.ret))>(
+                          site, \(argc) \tokens(fwd)); };
 
             std::meta::queue_injection(^^{
                 extern "C" \tokens(type_tokens(fn.ret)) \id(fn.name)(\tokens(decl))

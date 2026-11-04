@@ -9,6 +9,14 @@ endif()
 
 project(linkpy C CXX)
 
+# Optimised with debug info unless the configurer chose otherwise: the auditor
+# runs at every process start of a program that loads an init library, where
+# its SHA-256 over the linkstub cache key's inputs (its own binary among them)
+# is three quarters of a cache-hit start when compiled without optimisation.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+endif()
+
 # ---------------------------------------------------------------------------
 # linkpy: builds `pystubgen` (an executable) and `audit.so` (an LD_AUDIT
 # library), both embedding CPython. Ported from the old hand-written Makefile.

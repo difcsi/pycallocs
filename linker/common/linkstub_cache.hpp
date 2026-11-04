@@ -34,6 +34,13 @@ std::string linkstub_cache_read_file(const std::string &path);
 // hex. An item starting with '@' names a file whose contents are hashed.
 std::string linkstub_cache_key(const std::vector<std::string> &material);
 
+// The GNU build-id of the loaded object that contains `addr`, as lower-case
+// hex, or "" when the object carries none. The linker derives it from the
+// object's contents, so it identifies a build as well as hashing the file
+// would, without reading the file: the auditor keys the cache on its own
+// build this way (its binary runs to megabytes with debug info).
+std::string linkstub_cache_build_id(const void *addr);
+
 // The cached liblinkstub.so for `key`, or "" when there is none.
 std::string linkstub_cache_lookup(const std::string &key);
 

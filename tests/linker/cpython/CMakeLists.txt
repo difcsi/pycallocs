@@ -39,7 +39,9 @@ add_test(NAME python_heap_hints_headers COMMAND ${CMAKE_COMMAND}
 add_library(heap_hints_fixture SHARED heap_hints/dwarf/hh.py.c)
 set_target_properties(heap_hints_fixture PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/heap_hints/dwarf")
-target_compile_options(heap_hints_fixture PRIVATE -g)
+# -O0 whatever the build type: at -O2 the DWARF no longer carries the escaping
+# pointer parameters this fixture exists to show.
+target_compile_options(heap_hints_fixture PRIVATE -g -O0)
 
 add_test(NAME python_heap_hints_dwarf COMMAND ${CMAKE_COMMAND}
     -DHEAPHINTS=$<TARGET_FILE:heaphints>
@@ -67,6 +69,35 @@ add_linkpy_test(bytes_array LANG python)
 # str_field: char* / const char* FIELDS of a by-value struct arrive in Python
 # as str (NULL -> None), the same mapping top-level char* arguments get.
 add_linkpy_test(str_field LANG python)
+
+# Benchmarks, run as ordinary tests (they pass on exit code and print their
+# numbers; see them with `ctest -R python_bench -V`, LINKPY_BENCH_CALLS sets the
+# iteration count). bench_divide is the fixed cost of one trampoline call;
+# bench_structs the by-value structs carrying fixed-capacity arrays in both
+# directions plus a flat struct of strings as an argument.
+add_linkpy_test(bench_divide LANG python)
+add_linkpy_test(bench_structs LANG python)
+
+# padded: a by-value result with padding between its members arrives with its
+# padding zero -- the C caller compares, hashes or writes the struct whole.
+add_linkpy_test(padded LANG python)
+
+# marshaller_refs: the marshaller driven directly by a C++ host that catches
+# its exceptions and keeps calling; a failed call (the function raises, an
+# argument cannot be converted) must not leak the module's or the function's
+# references. Links the marshaller and the VM template straight in, no auditor.
+add_executable(python_marshaller_refs marshaller_refs/main.cpp
+    "${LINKPY_ROOT}/cpython/pycpputils.cpp" "${LINKPY_ROOT}/cpython/template.cpp")
+target_include_directories(python_marshaller_refs PRIVATE
+    "${LINKPY_ROOT}/common" "${LINKPY_ROOT}/cpython" "${PYCALLOCS_COMMON_DIR}" ${PY_INCLUDES})
+target_link_libraries(python_marshaller_refs PRIVATE ${PYTHON_LIB} ${PY_SYSLIBS})
+add_test(NAME python_marshaller_refs COMMAND python_marshaller_refs
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/marshaller_refs")
+
+# rebind: each call sees the module as it is at that moment -- a function
+# rebound in the module's namespace (what importlib.reload does) and a module
+# object replaced in sys.modules -- so the callable may not be kept across calls.
+add_linkpy_test(rebind LANG python)
 
 # The auditor and the linkstub stay quiet unless debugging is requested: a
 # long-running host (a web server) cannot afford a line printed per call.

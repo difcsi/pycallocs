@@ -21,6 +21,39 @@ PyObject *import_function(PyObject *module, const char *name);
 PyObject *call_function(PyObject *pFunc, PyObject *args);
 void init_py();
 
+// One record per generated trampoline, defined `static` inside it with the
+// module and function names it was generated with. The marshaller adds the
+// interned Python strings for them on the first call (under the GIL, which
+// every marshalling caller holds), so later calls resolve the callable with
+// two dictionary lookups instead of a full import.
+struct CallSite
+{
+    const char *module;
+    const char *function;
+    PyObject *module_name;    // interned, nullptr until the first call
+    PyObject *function_name;  // interned, nullptr until the first call
+};
+
+// The callable of a call site as a new reference, with a new reference to
+// its module in *module_out. It is the live sys.modules entry (imported on
+// the first call, or again if something dropped it) and the live attribute,
+// so a function rebound by importlib.reload() or a module object replaced in
+// sys.modules is what the next call gets. Prints the Python error and throws
+// std::runtime_error when the module or the function is missing.
+PyObject *resolve_callable(CallSite &site, PyObject **module_out);
+
+// The interned Python string for a struct member's name, one per member for
+// the life of the process, made on first use (under the GIL, which every
+// marshalling caller holds). An attribute get or set with an interned name
+// skips building and hashing a string per field per call.
+template <std::meta::info M>
+PyObject *field_name()
+{
+    static PyObject *name = PyUnicode_InternFromString(
+        std::define_static_string(std::meta::identifier_of(M)));
+    return name;
+}
+
 // Wrap a raw C pointer in a pycallocs proxy via allocs.proxy_from_address.
 // Returns a NEW reference, or NULL with a Python exception set.
 PyObject *proxy_from_c_ptr(const void *ptr);
@@ -34,8 +67,9 @@ void *ptr_from_proxy(PyObject *obj);
 // Fixed-size char arrays inside a by-value struct cross as Python bytes. A C
 // array cannot be returned or assigned, so the aggregate loop in PyObject_to_T
 // fills the member in place: a bytes/bytearray no longer than the array is
-// copied in and the remainder stays at the zero the enclosing `T result{}`
-// gave it, which leaves a char[N] NUL-terminated for the C side.
+// copied in and the remainder is zeroed, which leaves a char[N] NUL-terminated
+// for the C side. Only the tail is written to zero: the whole array was not
+// cleared beforehand (that cost a 64 KiB memset per call for a full chunk).
 template <typename T>
 void PyObject_into_array(PyObject *obj, T &dest, const char *field)
 {
@@ -65,6 +99,25 @@ void PyObject_into_array(PyObject *obj, T &dest, const char *field)
                                  + " bytes do not fit a char[" + std::to_string(std::extent_v<T>) + "]");
     }
     std::memcpy(dest, buf, static_cast<size_t>(n));
+    std::memset(reinterpret_cast<char *>(dest) + n, 0, static_cast<size_t>(std::extent_v<T>) - static_cast<size_t>(n));
+}
+
+// Whether T's members leave padding bytes between or after them. A by-value
+// result with padding is cleared before its members are assigned, so the C
+// caller gets zero padding, as it did when the whole struct was
+// value-initialised; one without is written entirely by the member loop.
+template <typename T>
+consteval bool has_padding()
+{
+    constexpr auto ctx = std::meta::access_context::current();
+    std::size_t covered = 0;
+    for (auto member : std::meta::nonstatic_data_members_of(^^T, ctx))
+    {
+        if (std::meta::is_bit_field(member))
+            return true;
+        covered += std::meta::size_of(member);
+    }
+    return covered != sizeof(T);
 }
 
 // Convert a Python object into a C/C++ value of type T. Defined here (rather
@@ -135,14 +188,20 @@ T PyObject_to_T(PyObject *pValue)
     }
     else if constexpr (std::is_aggregate_v<T>)
     {
-        T result{};
+        // Not value-initialised: the loop below assigns every member (an array
+        // member is filled and its tail zeroed by PyObject_into_array), so a
+        // zero-fill here would be a second pass over the whole struct. Padding
+        // is the exception (has_padding): those bytes are cleared first.
+        T result;
+        if constexpr (has_padding<T>())
+            std::memset(&result, 0, sizeof result);
         constexpr auto ctx = std::meta::access_context::current();
         template for (constexpr auto member : std::define_static_array(
                           std::meta::nonstatic_data_members_of(^^T, ctx)))
         {
             constexpr const char *field =
                 std::define_static_string(std::meta::identifier_of(member));
-            PyObject *attr = PyObject_GetAttrString(pValue, field);
+            PyObject *attr = PyObject_GetAttr(pValue, field_name<member>());
             if (attr == NULL)
             {
                 PyErr_Print();
@@ -219,21 +278,27 @@ PyObject *T_to_PyObject(const T &value)
     }
     else if constexpr (std::is_aggregate_v<T>)
     {
-        PyObject *types = PyImport_ImportModule("types");
-        if (types == NULL)
+        // types.SimpleNamespace, looked up once per struct type and kept for
+        // the process (importing `types` on every crossing cost more than the
+        // namespace object itself).
+        static PyObject *ns_cls = nullptr;
+        if (ns_cls == nullptr)
         {
-            PyErr_Print();
-            throw std::runtime_error("T_to_PyObject: cannot import 'types'");
-        }
-        PyObject *ns_cls = PyObject_GetAttrString(types, "SimpleNamespace");
-        Py_DECREF(types);
-        if (ns_cls == NULL)
-        {
-            PyErr_Print();
-            throw std::runtime_error("T_to_PyObject: no types.SimpleNamespace");
+            PyObject *types = PyImport_ImportModule("types");
+            if (types == NULL)
+            {
+                PyErr_Print();
+                throw std::runtime_error("T_to_PyObject: cannot import 'types'");
+            }
+            ns_cls = PyObject_GetAttrString(types, "SimpleNamespace");
+            Py_DECREF(types);
+            if (ns_cls == NULL)
+            {
+                PyErr_Print();
+                throw std::runtime_error("T_to_PyObject: no types.SimpleNamespace");
+            }
         }
         PyObject *obj = PyObject_CallNoArgs(ns_cls);
-        Py_DECREF(ns_cls);
         if (obj == NULL)
         {
             PyErr_Print();
@@ -247,7 +312,7 @@ PyObject *T_to_PyObject(const T &value)
             constexpr const char *field =
                 std::define_static_string(std::meta::identifier_of(member));
             PyObject *attr = T_to_PyObject(value.[:member:]);
-            if (PyObject_SetAttrString(obj, field, attr) < 0)
+            if (PyObject_SetAttr(obj, field_name<member>(), attr) < 0)
             {
                 Py_XDECREF(attr);
                 Py_DECREF(obj);
@@ -301,18 +366,49 @@ PyObject *arg_to_PyObject(const T &value)
     }
 }
 
-// Marshal each C argument into a Python tuple. arg_to_PyObject routes pointer
-// arguments through a pycallocs proxy and everything else through the
-// reflection-aware T_to_PyObject. PyTuple_SetItem steals the reference each
-// branch hands back, so nothing leaks.
-template <typename... Args>
-static PyObject *pack_args(Args... args)
+// The arguments of one call as the array the vectorcall protocol takes: slot
+// 0 is the one PY_VECTORCALL_ARGUMENTS_OFFSET lets the callee use, the
+// references in the rest are owned here and dropped on the way out, whether
+// the call returned or an argument's conversion threw.
+template <std::size_t N>
+struct ArgArray
 {
-    PyObject *pArgs = PyTuple_New(sizeof...(args));
-    [[maybe_unused]] Py_ssize_t idx = 0;
-    ((PyTuple_SetItem(pArgs, idx++, arg_to_PyObject(args))), ...);
-    return pArgs;
+    PyObject *slots[N + 1] = {};
+    ~ArgArray()
+    {
+        for (std::size_t i = 1; i <= N; i++)
+            Py_XDECREF(slots[i]);
+    }
+    PyObject **args() { return slots + 1; }
+    ArgArray() = default;
+    ArgArray(const ArgArray &) = delete;
+    ArgArray &operator=(const ArgArray &) = delete;
+};
+
+// Marshal each C argument into the argument array. arg_to_PyObject routes
+// pointer arguments through a pycallocs proxy and everything else through the
+// reflection-aware T_to_PyObject. The arguments travel by reference from the
+// trampoline's own by-value parameters (the C ABI's copy) down to the
+// conversion: a 64 KiB struct is not copied again on the way.
+template <typename... Args>
+static void pack_argv(PyObject **out, const Args &... args)
+{
+    [[maybe_unused]] std::size_t idx = 0;
+    ((out[idx++] = arg_to_PyObject(args)), ...);
 }
+
+// Owns one Python reference for a scope: the marshalling templates hold the
+// module, the callable and the result across code that can throw (a
+// conversion, a raising function), and every path must give them back.
+struct PyRef
+{
+    PyObject *p;
+    explicit PyRef(PyObject *o = nullptr) : p(o) {}
+    ~PyRef() { Py_XDECREF(p); }
+    PyRef(const PyRef &) = delete;
+    PyRef &operator=(const PyRef &) = delete;
+    PyObject *get() const { return p; }
+};
 
 // Holds the GIL for one trampoline call. The linkstub parks the GIL once the
 // interpreter is up (template.cpp), so between calls other Python threads run.
@@ -326,72 +422,49 @@ struct GilGuard
 };
 
 template <typename... Args>
-void run_function_void(const std::string &module, const std::string &function, int argc, Args... args)
+void run_function_void(CallSite &site, int argc, const Args &... args)
 {
+    (void) argc;
     ensure_vm();
     GilGuard gil;
 #ifdef DEBUG
-    std::cout << "Running function " << function << " from module " << module << " with " << argc << " arguments" << std::endl;
+    std::cout << "Running function " << site.function << " from module " << site.module << " with " << argc << " arguments" << std::endl;
 #endif
-    PyObject *pModule = import_module(module.c_str());
-    if (pModule == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import module");
-    }
-    PyObject *pFunc = import_function(pModule, function.c_str());
-    if (pFunc == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import function");
-    }
+    PyObject *module = nullptr;
+    PyRef function(resolve_callable(site, &module));
+    PyRef module_ref(module);
 
-    PyObject *pArgs = pack_args(args...);
-    PyObject *pValue = call_function(pFunc, pArgs);
-    Py_DECREF(pArgs);
-    Py_XDECREF(pValue);
-
-    Py_DECREF(pFunc);
-    Py_DECREF(pModule);
+    ArgArray<sizeof...(Args)> argv;
+    pack_argv(argv.args(), args...);
+    PyRef value(PyObject_Vectorcall(function.get(), argv.args(),
+                                    sizeof...(Args) | PY_VECTORCALL_ARGUMENTS_OFFSET, nullptr));
+    if (value.get() == NULL)
+        PyErr_Print();
 }
 
 template <typename T, typename... Args>
-T run_function(const std::string &module, const std::string &function, int argc, Args... args)
+T run_function(CallSite &site, int argc, const Args &... args)
 {
+    (void) argc;
     ensure_vm();
     GilGuard gil;
 #ifdef DEBUG
-    std::cout << "Running function " << function << " from module " << module << " with " << argc << " arguments" << std::endl;
+    std::cout << "Running function " << site.function << " from module " << site.module << " with " << argc << " arguments" << std::endl;
 #endif
-    PyObject *pModule = import_module(module.c_str());
-    if (pModule == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import module");
-    }
-    PyObject *pFunc = import_function(pModule, function.c_str());
-    if (pFunc == NULL)
-    {
-        PyErr_Print();
-        throw std::runtime_error("Failed to import function");
-    }
+    PyObject *module = nullptr;
+    PyRef function(resolve_callable(site, &module));
+    PyRef module_ref(module);
 
-    PyObject *pArgs = pack_args(args...);
-    PyObject *pValue = call_function(pFunc, pArgs);
-    Py_DECREF(pArgs);
-    if (pValue == NULL)
+    ArgArray<sizeof...(Args)> argv;
+    pack_argv(argv.args(), args...);
+    PyRef value(PyObject_Vectorcall(function.get(), argv.args(),
+                                    sizeof...(Args) | PY_VECTORCALL_ARGUMENTS_OFFSET, nullptr));
+    if (value.get() == NULL)
     {
         PyErr_Print();
         throw std::runtime_error("Failed to call function");
     }
-
-    T result = PyObject_to_T<T>(pValue);
-
-    Py_DECREF(pValue);
-    Py_DECREF(pFunc);
-    Py_DECREF(pModule);
-
-    return result;
+    return PyObject_to_T<T>(value.get());
 }
 
 } // namespace linkpy::py

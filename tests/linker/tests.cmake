@@ -130,11 +130,13 @@ function(add_linkpy_test name)
     add_library(${test_name}_init SHARED ${gen_sources})
     # Each test's init library is named libinit.so but lives in its own directory
     # (they share that SONAME). Compile with -g so the auditor recovers the
-    # function signatures from the embedded DWARF (see INIT_DWARF_PATH below).
+    # function signatures from the embedded DWARF (see INIT_DWARF_PATH below),
+    # and at -O0 whatever the build type: the DWARF is the fixture, and the
+    # optimiser rewrites it.
     set_target_properties(${test_name}_init PROPERTIES
         OUTPUT_NAME init
         LIBRARY_OUTPUT_DIRECTORY "${work_dir}")
-    target_compile_options(${test_name}_init PRIVATE -g)
+    target_compile_options(${test_name}_init PRIVATE -g -O0)
     target_include_directories(${test_name}_init PRIVATE "${include_dir}")
 
     add_executable(${test_name}_main "${test_dir}/src/main.c")
@@ -309,7 +311,7 @@ function(add_linkpy_byref_test name)
     set_target_properties(${test_name}_init PROPERTIES
         OUTPUT_NAME init
         LIBRARY_OUTPUT_DIRECTORY "${work_dir}")
-    target_compile_options(${test_name}_init PRIVATE -g)
+    target_compile_options(${test_name}_init PRIVATE -g -O0)
     target_include_directories(${test_name}_init PRIVATE "${include_dir}")
 
     # Build main with allocscc so its malloc'd struct carries a liballocs type.
@@ -439,7 +441,7 @@ function(add_linkpy_cross_test name)
     set_target_properties(${test_name}_init PROPERTIES
         OUTPUT_NAME init
         LIBRARY_OUTPUT_DIRECTORY "${work_dir}")
-    target_compile_options(${test_name}_init PRIVATE -g)
+    target_compile_options(${test_name}_init PRIVATE -g -O0)
     target_include_directories(${test_name}_init PRIVATE "${include_dir}")
 
     # By-reference extras: allocscc-built typed helper libraries the host VM

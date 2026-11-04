@@ -145,15 +145,17 @@ void gen_code(std::ostream &out, const FunLinkEntry &fun)
 {
     const std::size_t paramc = fun.params.size();
 
-    // The trampoline forwards to run_function<T> (or run_function_void for void).
+    // The trampoline forwards to run_function<T> (or run_function_void for void)
+    // with its call-site record: one static per trampoline holding the module
+    // and function names it was generated with, which the marshaller fills
+    // with what it needs to resolve the callable cheaply on every call.
     // Build the call expression in a single buffer, appending in place.
     std::string call;
     auto it = std::back_inserter(call);
     if (fun.return_type == "void")
-        std::format_to(it, R"({}::run_function_void("{}", "{}", {})", CALLEE_NS, fun.module_name, fun.name, paramc);
+        std::format_to(it, R"({}::run_function_void(site, {})", CALLEE_NS, paramc);
     else
-        std::format_to(it, R"(return {}::run_function<{}>("{}", "{}", {})",
-                       CALLEE_NS, fun.return_type, fun.module_name, fun.name, paramc);
+        std::format_to(it, R"(return {}::run_function<{}>(site, {})", CALLEE_NS, fun.return_type, paramc);
     if (paramc > 0)
         std::format_to(it, ", {}", fun.params_args());
     call += ')';
@@ -163,11 +165,13 @@ void gen_code(std::ostream &out, const FunLinkEntry &fun)
 #ifdef DEBUG
     printf("Hello from {}!\n");
 #endif
+    static {}::CallSite site{{"{}", "{}"}};
     {};
 }}
 
 )",
-                       fun.return_type, fun.name, fun.params_decl(), fun.name, call);
+                       fun.return_type, fun.name, fun.params_decl(), fun.name,
+                       CALLEE_NS, fun.module_name, fun.name, call);
 }
 
 void verify_function(FunLinkEntry &fun)
@@ -500,9 +504,18 @@ static std::vector<std::string> linkstub_cache_material()
     std::vector<std::string> m;
     m.push_back("linkpy-linkstub-cache-1");
     m.push_back(LANG_NAME);
-    Dl_info self;
-    if (dladdr(reinterpret_cast<void *>(&init), &self) != 0 && self.dli_fname != nullptr)
-        m.push_back(std::string("@") + self.dli_fname);
+    // The auditor itself (its code generator) by its build-id, which the
+    // linker derived from its contents; hashing the file instead was most of a
+    // cache-hit start once the binary carried debug info.
+    const std::string build_id = linkstub_cache_build_id(reinterpret_cast<void *>(&init));
+    if (!build_id.empty())
+        m.push_back("auditor-build-id:" + build_id);
+    else
+    {
+        Dl_info self;
+        if (dladdr(reinterpret_cast<void *>(&init), &self) != 0 && self.dli_fname != nullptr)
+            m.push_back(std::string("@") + self.dli_fname);
+    }
     const char *tmpl = linkpy_getenv("TEMPLATE_PATH");
     m.push_back(std::string("@") + (tmpl != nullptr ? tmpl : TEMPLATE_DEFAULT_PATH));
     const char *host = linkpy_getenv("LINKPY_HOST_LANG");

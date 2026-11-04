@@ -15,6 +15,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dlfcn.h>
+#include <elf.h>
+#include <link.h>
 
 extern char **environ;
 
@@ -245,6 +248,48 @@ std::string linkstub_cache_read_file(const std::string &path)
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
+}
+
+std::string linkstub_cache_build_id(const void *addr)
+{
+    Dl_info info;
+    if (dladdr(addr, &info) == 0 || info.dli_fbase == nullptr)
+        return "";
+    const auto *base = static_cast<const unsigned char *>(info.dli_fbase);
+    const auto *ehdr = reinterpret_cast<const ElfW(Ehdr) *>(base);
+    if (std::memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0)
+        return "";
+    const auto *phdr = reinterpret_cast<const ElfW(Phdr) *>(base + ehdr->e_phoff);
+    for (unsigned i = 0; i < ehdr->e_phnum; i++)
+    {
+        if (phdr[i].p_type != PT_NOTE)
+            continue;
+        // A shared object's p_vaddr is relative to its load base.
+        const unsigned char *p = base + phdr[i].p_vaddr;
+        const unsigned char *end = p + phdr[i].p_memsz;
+        while (p + sizeof(ElfW(Nhdr)) <= end)
+        {
+            const auto *note = reinterpret_cast<const ElfW(Nhdr) *>(p);
+            const unsigned char *name = p + sizeof(ElfW(Nhdr));
+            const unsigned char *desc = name + ((note->n_namesz + 3) & ~3u);
+            if (desc + note->n_descsz > end)
+                break;
+            if (note->n_type == NT_GNU_BUILD_ID && note->n_namesz == 4
+                && std::memcmp(name, "GNU", 4) == 0)
+            {
+                std::string hex;
+                char buf[3];
+                for (unsigned j = 0; j < note->n_descsz; j++)
+                {
+                    std::snprintf(buf, sizeof buf, "%02x", desc[j]);
+                    hex += buf;
+                }
+                return hex;
+            }
+            p = desc + ((note->n_descsz + 3) & ~3u);
+        }
+    }
+    return "";
 }
 
 std::string linkstub_cache_key(const std::vector<std::string> &material)

@@ -318,9 +318,9 @@ and then configure things before calling into it:
 * **Cache.** The compiled `liblinkstub.so` is cached under
   `$LINKPY_CACHE_DIR` (empty disables), else `$XDG_CACHE_HOME/linkpy`, else
   `~/.cache/linkpy`, else (no or unwritable `HOME`, as for a service)
-  `$TMPDIR/linkpy-cache-<uid>`, keyed by a SHA-256 of the auditor binary, the
-  template(s), the stub library's DWARF, the build command and the init
-  library's directory. An entry is only loaded when it, its directory and the
+  `$TMPDIR/linkpy-cache-<uid>`, keyed by a SHA-256 of the auditor's build-id
+  (its binary's contents when it carries none), the template(s), the stub
+  library's DWARF, the build command and the init library's directory. An entry is only loaded when it, its directory and the
   cache directory are owned by the current user (or root) and not writable by
   group or others (`python_linkstub_cache_untrusted`); a failed store prints
   one line and the process compiles its own. The key also covers every source
@@ -339,6 +339,18 @@ and then configure things before calling into it:
   never runs the compiler (`python_linkstub_cache`). On a hit the auditor also
   skips its load-time check that the Python module defines every stub function;
   a missing one surfaces at call time instead.
+
+## Benchmarks
+
+Two fixtures under `tests/linker/cpython/` measure what a call costs and run as
+ordinary tests (they pass on exit code): `python_bench_divide` is the fixed cost
+of one trampoline call (two ints in, a float out), `python_bench_structs` the
+by-value structs carrying fixed-capacity arrays in both directions (a 64 KiB
+`chunk` in and out, a 32 KiB header block with a nested struct out) and a flat
+struct of strings as an argument. `ctest -R python_bench -V` prints one
+`bench <shape>: <µs> us/call` line per shape; `LINKPY_BENCH_CALLS` sets the
+iteration count. Numbers depend on the machine and on the `-O` level of
+`LINKSTUB_BUILD_CMD`, so compare runs made the same way, pinned to one core.
 
 ## TODOS
 
