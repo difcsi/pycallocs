@@ -479,9 +479,18 @@ static std::vector<std::string> linkstub_cache_material()
     std::vector<std::string> m;
     m.push_back("linkpy-linkstub-cache-1");
     m.push_back(LANG_NAME);
-    Dl_info self;
-    if (dladdr(reinterpret_cast<void *>(&init), &self) != 0 && self.dli_fname != nullptr)
-        m.push_back(std::string("@") + self.dli_fname);
+    // The auditor itself (its code generator) by its build-id, which the
+    // linker derived from its contents; hashing the file instead was most of a
+    // cache-hit start once the binary carried debug info.
+    const std::string build_id = linkstub_cache_build_id(reinterpret_cast<void *>(&init));
+    if (!build_id.empty())
+        m.push_back("auditor-build-id:" + build_id);
+    else
+    {
+        Dl_info self;
+        if (dladdr(reinterpret_cast<void *>(&init), &self) != 0 && self.dli_fname != nullptr)
+            m.push_back(std::string("@") + self.dli_fname);
+    }
     const char *tmpl = linkpy_getenv("TEMPLATE_PATH");
     m.push_back(std::string("@") + (tmpl != nullptr ? tmpl : TEMPLATE_DEFAULT_PATH));
     const char *host = linkpy_getenv("LINKPY_HOST_LANG");

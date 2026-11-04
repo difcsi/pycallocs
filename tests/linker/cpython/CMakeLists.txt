@@ -39,7 +39,9 @@ add_test(NAME python_heap_hints_headers COMMAND ${CMAKE_COMMAND}
 add_library(heap_hints_fixture SHARED heap_hints/dwarf/hh.py.c)
 set_target_properties(heap_hints_fixture PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/heap_hints/dwarf")
-target_compile_options(heap_hints_fixture PRIVATE -g)
+# -O0 whatever the build type: at -O2 the DWARF no longer carries the escaping
+# pointer parameters this fixture exists to show.
+target_compile_options(heap_hints_fixture PRIVATE -g -O0)
 
 add_test(NAME python_heap_hints_dwarf COMMAND ${CMAKE_COMMAND}
     -DHEAPHINTS=$<TARGET_FILE:heaphints>
