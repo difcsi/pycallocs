@@ -42,6 +42,18 @@ struct CallSite
 // std::runtime_error when the module or the function is missing.
 PyObject *resolve_callable(CallSite &site, PyObject **module_out);
 
+// The interned Python string for a struct member's name, one per member for
+// the life of the process, made on first use (under the GIL, which every
+// marshalling caller holds). An attribute get or set with an interned name
+// skips building and hashing a string per field per call.
+template <std::meta::info M>
+PyObject *field_name()
+{
+    static PyObject *name = PyUnicode_InternFromString(
+        std::define_static_string(std::meta::identifier_of(M)));
+    return name;
+}
+
 // Wrap a raw C pointer in a pycallocs proxy via allocs.proxy_from_address.
 // Returns a NEW reference, or NULL with a Python exception set.
 PyObject *proxy_from_c_ptr(const void *ptr);
@@ -163,7 +175,7 @@ T PyObject_to_T(PyObject *pValue)
         {
             constexpr const char *field =
                 std::define_static_string(std::meta::identifier_of(member));
-            PyObject *attr = PyObject_GetAttrString(pValue, field);
+            PyObject *attr = PyObject_GetAttr(pValue, field_name<member>());
             if (attr == NULL)
             {
                 PyErr_Print();
@@ -240,21 +252,27 @@ PyObject *T_to_PyObject(const T &value)
     }
     else if constexpr (std::is_aggregate_v<T>)
     {
-        PyObject *types = PyImport_ImportModule("types");
-        if (types == NULL)
+        // types.SimpleNamespace, looked up once per struct type and kept for
+        // the process (importing `types` on every crossing cost more than the
+        // namespace object itself).
+        static PyObject *ns_cls = nullptr;
+        if (ns_cls == nullptr)
         {
-            PyErr_Print();
-            throw std::runtime_error("T_to_PyObject: cannot import 'types'");
-        }
-        PyObject *ns_cls = PyObject_GetAttrString(types, "SimpleNamespace");
-        Py_DECREF(types);
-        if (ns_cls == NULL)
-        {
-            PyErr_Print();
-            throw std::runtime_error("T_to_PyObject: no types.SimpleNamespace");
+            PyObject *types = PyImport_ImportModule("types");
+            if (types == NULL)
+            {
+                PyErr_Print();
+                throw std::runtime_error("T_to_PyObject: cannot import 'types'");
+            }
+            ns_cls = PyObject_GetAttrString(types, "SimpleNamespace");
+            Py_DECREF(types);
+            if (ns_cls == NULL)
+            {
+                PyErr_Print();
+                throw std::runtime_error("T_to_PyObject: no types.SimpleNamespace");
+            }
         }
         PyObject *obj = PyObject_CallNoArgs(ns_cls);
-        Py_DECREF(ns_cls);
         if (obj == NULL)
         {
             PyErr_Print();
@@ -268,7 +286,7 @@ PyObject *T_to_PyObject(const T &value)
             constexpr const char *field =
                 std::define_static_string(std::meta::identifier_of(member));
             PyObject *attr = T_to_PyObject(value.[:member:]);
-            if (PyObject_SetAttrString(obj, field, attr) < 0)
+            if (PyObject_SetAttr(obj, field_name<member>(), attr) < 0)
             {
                 Py_XDECREF(attr);
                 Py_DECREF(obj);
