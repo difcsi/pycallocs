@@ -67,8 +67,9 @@ void *ptr_from_proxy(PyObject *obj);
 // Fixed-size char arrays inside a by-value struct cross as Python bytes. A C
 // array cannot be returned or assigned, so the aggregate loop in PyObject_to_T
 // fills the member in place: a bytes/bytearray no longer than the array is
-// copied in and the remainder stays at the zero the enclosing `T result{}`
-// gave it, which leaves a char[N] NUL-terminated for the C side.
+// copied in and the remainder is zeroed, which leaves a char[N] NUL-terminated
+// for the C side. Only the tail is written to zero: the whole array was not
+// cleared beforehand (that cost a 64 KiB memset per call for a full chunk).
 template <typename T>
 void PyObject_into_array(PyObject *obj, T &dest, const char *field)
 {
@@ -98,6 +99,7 @@ void PyObject_into_array(PyObject *obj, T &dest, const char *field)
                                  + " bytes do not fit a char[" + std::to_string(std::extent_v<T>) + "]");
     }
     std::memcpy(dest, buf, static_cast<size_t>(n));
+    std::memset(reinterpret_cast<char *>(dest) + n, 0, static_cast<size_t>(std::extent_v<T>) - static_cast<size_t>(n));
 }
 
 // Convert a Python object into a C/C++ value of type T. Defined here (rather
@@ -168,7 +170,10 @@ T PyObject_to_T(PyObject *pValue)
     }
     else if constexpr (std::is_aggregate_v<T>)
     {
-        T result{};
+        // Not value-initialised: the loop below assigns every member (an array
+        // member is filled and its tail zeroed by PyObject_into_array), so a
+        // zero-fill here would be a second pass over the whole struct.
+        T result;
         constexpr auto ctx = std::meta::access_context::current();
         template for (constexpr auto member : std::define_static_array(
                           std::meta::nonstatic_data_members_of(^^T, ctx)))
@@ -361,9 +366,11 @@ struct ArgArray
 
 // Marshal each C argument into the argument array. arg_to_PyObject routes
 // pointer arguments through a pycallocs proxy and everything else through the
-// reflection-aware T_to_PyObject.
+// reflection-aware T_to_PyObject. The arguments travel by reference from the
+// trampoline's own by-value parameters (the C ABI's copy) down to the
+// conversion: a 64 KiB struct is not copied again on the way.
 template <typename... Args>
-static void pack_argv(PyObject **out, Args... args)
+static void pack_argv(PyObject **out, const Args &... args)
 {
     [[maybe_unused]] std::size_t idx = 0;
     ((out[idx++] = arg_to_PyObject(args)), ...);
@@ -381,7 +388,7 @@ struct GilGuard
 };
 
 template <typename... Args>
-void run_function_void(CallSite &site, int argc, Args... args)
+void run_function_void(CallSite &site, int argc, const Args &... args)
 {
     (void) argc;
     ensure_vm();
@@ -405,7 +412,7 @@ void run_function_void(CallSite &site, int argc, Args... args)
 }
 
 template <typename T, typename... Args>
-T run_function(CallSite &site, int argc, Args... args)
+T run_function(CallSite &site, int argc, const Args &... args)
 {
     (void) argc;
     ensure_vm();
