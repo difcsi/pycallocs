@@ -98,3 +98,52 @@ add_linkpy_test(environ_moved LANG python DLOPEN)
 add_linkpy_test(env_after_load LANG python DLOPEN)
 set_property(TEST python_env_after_load APPEND PROPERTY ENVIRONMENT
     "LATE_MODULE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/env_after_load/elsewhere")
+
+# init_lib_dir: the Python module sits next to libinit.so (copied there at
+# configure time), with no PYTHONPATH pointing at it: the init library's
+# directory must be on the module search path.
+add_linkpy_test(init_lib_dir LANG python)
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/init_lib_dir/beside/beside.py"
+     DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/init_lib_dir")
+
+# no_signal_handlers: the embedded interpreter leaves the host's signal
+# dispositions alone (Py_InitializeEx(0)).
+add_linkpy_test(no_signal_handlers LANG python)
+
+# linkstub_cache_untrusted: a cache entry writable by others is not loaded.
+# linkstub_cache_nohome: without LINKPY_CACHE_DIR and HOME the cache still
+# works, under a per-user directory in TMPDIR.
+add_test(NAME python_linkstub_cache_untrusted
+    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/check_linkstub_cache_untrusted.sh"
+            $<TARGET_FILE:python_simple_divide_main>)
+add_test(NAME python_linkstub_cache_nohome
+    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/check_linkstub_cache_nohome.sh"
+            $<TARGET_FILE:python_simple_divide_main>)
+set_tests_properties(python_linkstub_cache_untrusted python_linkstub_cache_nohome PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/simple_divide"
+    ENVIRONMENT "${_simple_divide_env}")
+
+# concurrent_first_call: eight threads make their first call together.
+add_linkpy_test(concurrent_first_call LANG python)
+
+# no_src_dir: run from a directory without src/; the module sits beside the
+# init library; the relative "src" entry must not be on sys.path.
+add_linkpy_test(no_src_dir LANG python)
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/no_src_dir/beside/nosrc.py"
+     DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/no_src_dir")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/no_src_dir/elsewhere")
+set_tests_properties(python_no_src_dir PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/no_src_dir/elsewhere")
+
+# environ_huge: an oversized environment entry is skipped with a notice.
+# linkstub_cache_key: the key covers the compiled marshaller source; stale
+# entries are evicted. linkstub_cache_concurrent: one compile for several
+# processes starting together.
+foreach(check environ_huge linkstub_cache_key linkstub_cache_concurrent)
+    add_test(NAME python_${check}
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/check_${check}.sh"
+                $<TARGET_FILE:python_simple_divide_main>)
+    set_tests_properties(python_${check} PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/simple_divide"
+        ENVIRONMENT "${_simple_divide_env}")
+endforeach()

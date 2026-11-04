@@ -1,0 +1,2 @@
+The module lives in ../beside (copied next to libinit.so); the test runs from
+a directory that has no src/.

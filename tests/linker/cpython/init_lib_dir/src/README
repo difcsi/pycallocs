@@ -1,0 +1,2 @@
+Deliberately no beside.py here: it is copied next to libinit.so at configure
+time (see CMakeLists.txt) and must be found there.

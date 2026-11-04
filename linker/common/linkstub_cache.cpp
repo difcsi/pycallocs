@@ -10,6 +10,10 @@
 #include <sstream>
 #include <system_error>
 
+#include <chrono>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -109,8 +113,8 @@ namespace {
 // runtime (and any heap instrumentation it brings, e.g. liballocs) is up, so
 // it must not touch the heap. An environment larger than the buffer is kept
 // up to the last entry that fits.
-constexpr size_t ENV_BUF_SIZE = 64 * 1024;
-constexpr size_t ENV_MAX_ENTRIES = 2048;
+constexpr size_t ENV_BUF_SIZE = 256 * 1024;
+constexpr size_t ENV_MAX_ENTRIES = 8192;
 char g_env_buf[ENV_BUF_SIZE];
 const char *g_env_entries[ENV_MAX_ENTRIES];
 size_t g_env_count = 0;
@@ -119,18 +123,27 @@ bool g_environment_captured = false;
 
 void linkpy_capture_environment(char **envp)
 {
-    size_t used = 0;
+    size_t used = 0, skipped = 0;
     g_env_count = 0;
     for (char **e = envp; e != nullptr && *e != nullptr; e++)
     {
         const size_t len = std::strlen(*e) + 1;
+        // An entry that does not fit is skipped, not everything after it:
+        // one oversized variable must not hide the settings that follow.
         if (used + len > ENV_BUF_SIZE || g_env_count == ENV_MAX_ENTRIES)
-            break;
+        {
+            skipped++;
+            continue;
+        }
         std::memcpy(g_env_buf + used, *e, len);
         g_env_entries[g_env_count++] = g_env_buf + used;
         used += len;
     }
     g_environment_captured = true;
+    if (skipped > 0)
+        std::fprintf(stderr, "linkpy: environment snapshot truncated: %zu entr%s did not "
+                             "fit in %zu bytes / %zu entries\n",
+                     skipped, skipped == 1 ? "y" : "ies", ENV_BUF_SIZE, ENV_MAX_ENTRIES);
 }
 
 const char *linkpy_getenv(const char *name)
@@ -173,18 +186,55 @@ std::vector<std::string> linkpy_child_environment(const std::vector<std::string>
     return kept;
 }
 
+namespace {
+
+// A directory this process may use as its cache: it exists or can be created,
+// and is writable. Services often run without HOME, or with one they cannot
+// write, so the candidates fall through to a per-user directory in TMPDIR.
+bool usable_dir(const std::string &dir)
+{
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return !ec && access(dir.c_str(), W_OK | X_OK) == 0;
+}
+
+// Only load what nobody else could have written: owned by this user (or
+// root) and not writable by group or others. Applies to the file, its entry
+// directory and the cache directory, since a writable parent lets a file be
+// swapped underneath its name.
+bool trusted_path(const fs::path &p)
+{
+    struct stat st;
+    if (lstat(p.c_str(), &st) != 0)
+        return false;
+    if (st.st_uid != geteuid() && st.st_uid != 0)
+        return false;
+    if (st.st_mode & (S_IWGRP | S_IWOTH))
+        return false;
+    return true;
+}
+
+} // namespace
+
 std::string linkstub_cache_dir()
 {
     const char *dir = linkpy_getenv("LINKPY_CACHE_DIR");
     if (dir != nullptr)
-        return dir; // "" disables caching
+        return dir; // "" disables caching; an explicit directory is the operator's call
     const char *xdg = linkpy_getenv("XDG_CACHE_HOME");
-    if (xdg != nullptr && *xdg != '\0')
+    if (xdg != nullptr && *xdg != '\0' && usable_dir(std::string(xdg) + "/linkpy"))
         return std::string(xdg) + "/linkpy";
     const char *home = linkpy_getenv("HOME");
-    if (home != nullptr && *home != '\0')
+    if (home != nullptr && *home != '\0' && usable_dir(std::string(home) + "/.cache/linkpy"))
         return std::string(home) + "/.cache/linkpy";
-    return "";
+    const char *tmp = linkpy_getenv("TMPDIR");
+    const std::string base = (tmp != nullptr && *tmp != '\0') ? tmp : "/tmp";
+    const std::string fallback = base + "/linkpy-cache-" + std::to_string(geteuid());
+    std::error_code ec;
+    fs::create_directories(fallback, ec);
+    if (!ec)
+        fs::permissions(fallback, fs::perms::owner_all, fs::perm_options::replace, ec);
+    return usable_dir(fallback) ? fallback : "";
 }
 
 std::string linkstub_cache_read_file(const std::string &path)
@@ -229,10 +279,74 @@ std::string linkstub_cache_lookup(const std::string &key)
     const std::string dir = linkstub_cache_dir();
     if (dir.empty())
         return "";
-    const fs::path so = fs::path(dir) / key / "liblinkstub.so";
+    const fs::path entry = fs::path(dir) / key;
+    const fs::path so = entry / "liblinkstub.so";
     std::error_code ec;
-    return fs::is_regular_file(so, ec) ? so.string() : "";
+    if (!fs::is_regular_file(so, ec))
+        return "";
+    if (!trusted_path(dir) || !trusted_path(entry) || !trusted_path(so))
+    {
+        std::fprintf(stderr, "linkpy: ignoring cached linkstub %s: not owned by this user "
+                             "or writable by others\n", so.c_str());
+        return "";
+    }
+    return so.string();
 }
+
+int linkstub_cache_lock(const std::string &key)
+{
+    const std::string dir = linkstub_cache_dir();
+    if (dir.empty())
+        return -1;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string lock = dir + "/" + key + ".lock";
+    int fd = open(lock.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+    if (fd < 0)
+        return -1;
+    if (flock(fd, LOCK_EX) != 0)
+    {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+void linkstub_cache_unlock(int fd)
+{
+    if (fd < 0)
+        return;
+    flock(fd, LOCK_UN);
+    close(fd);
+}
+
+namespace {
+
+// Entries nobody has touched for a month go; a key changes whenever any of
+// its inputs does, so old entries only accumulate.
+void evict_stale(const std::string &dir, const std::string &keep)
+{
+    using namespace std::chrono;
+    std::error_code ec;
+    const auto now = fs::file_time_type::clock::now();
+    const auto max_age = hours(24 * 30);
+    for (const auto &entry : fs::directory_iterator(dir, ec))
+    {
+        if (entry.path().filename() == keep || entry.path().filename() == keep + ".lock")
+            continue;
+        fs::path stamp = entry.is_directory(ec) ? entry.path() / "liblinkstub.so" : entry.path();
+        const auto written = fs::last_write_time(stamp, ec);
+        if (ec)
+        {
+            ec.clear();
+            continue;
+        }
+        if (now - written > max_age)
+            fs::remove_all(entry.path(), ec);
+    }
+}
+
+} // namespace
 
 std::string linkstub_cache_store(const std::string &key, const std::string &built_so,
                                  const std::string &source_cpp)
@@ -244,13 +358,31 @@ std::string linkstub_cache_store(const std::string &key, const std::string &buil
     const fs::path entry = fs::path(dir) / key;
     fs::create_directories(entry, ec);
     if (ec)
+    {
+        std::fprintf(stderr, "linkpy: cannot store the linkstub in %s (%s); every "
+                             "process will compile its own\n", dir.c_str(), ec.message().c_str());
         return "";
+    }
+    // What we store must pass trusted_path on the way back in, whatever the
+    // umask: no group/other write on the cache directory (when it is ours),
+    // the entry or the file.
+    const fs::perms dir_perms = fs::perms::owner_all | fs::perms::group_read
+                                | fs::perms::group_exec | fs::perms::others_read
+                                | fs::perms::others_exec;
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0 && st.st_uid == geteuid()
+        && (st.st_mode & (S_IWGRP | S_IWOTH)))
+        fs::permissions(dir, dir_perms, fs::perm_options::replace, ec);
+    fs::permissions(entry, dir_perms, fs::perm_options::replace, ec);
     // Copy next to the final name, then rename: a concurrent reader either
     // sees no file or the whole one.
     const fs::path tmp = entry / ("liblinkstub.so." + std::to_string(getpid()));
     fs::copy_file(built_so, tmp, fs::copy_options::overwrite_existing, ec);
     if (ec)
         return "";
+    fs::permissions(tmp, fs::perms::owner_read | fs::perms::owner_write
+                             | fs::perms::group_read | fs::perms::others_read,
+                    fs::perm_options::replace, ec);
     const fs::path final_so = entry / "liblinkstub.so";
     fs::rename(tmp, final_so, ec);
     if (ec)
@@ -259,5 +391,6 @@ std::string linkstub_cache_store(const std::string &key, const std::string &buil
         return "";
     }
     fs::copy_file(source_cpp, entry / "linkstub.cpp", fs::copy_options::overwrite_existing, ec);
+    evict_stale(dir, key);
     return final_so.string();
 }

@@ -37,6 +37,12 @@ std::string linkstub_cache_key(const std::vector<std::string> &material);
 // The cached liblinkstub.so for `key`, or "" when there is none.
 std::string linkstub_cache_lookup(const std::string &key);
 
+// Hold the key's lock while compiling, so processes starting together on a
+// cold cache wait for one compile instead of each running the compiler.
+// Returns a descriptor to pass to linkstub_cache_unlock, or -1 (no lock).
+int linkstub_cache_lock(const std::string &key);
+void linkstub_cache_unlock(int fd);
+
 // Store `built_so` (and `source_cpp`, for inspection) under `key`. Returns
 // the cached liblinkstub.so path, or "" when the store failed.
 std::string linkstub_cache_store(const std::string &key, const std::string &built_so,

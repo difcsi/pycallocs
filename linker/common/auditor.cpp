@@ -24,7 +24,7 @@
 #include "linkstub_cache.hpp"
 #include <dlfcn.h>
 #include <sys/wait.h>
-#include <malloc.h>
+#include <algorithm>
 #include "hostgen.hpp"
 #ifdef LINKPY_INJECT_STUBS
 #include "codegen_inject.hpp" // DRAFT P3294 token-injection codegen back end
@@ -242,6 +242,20 @@ int compile_stubs()
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+// The directory holding the stub init library (INIT_DWARF_PATH names it), or
+// "" when unknown.
+static std::string init_lib_dir()
+{
+    const char *dwarf_path = linkpy_getenv("INIT_DWARF_PATH");
+    if (dwarf_path == NULL)
+        return "";
+    std::error_code ec;
+    std::filesystem::path p = std::filesystem::absolute(dwarf_path, ec);
+    if (ec)
+        return "";
+    return p.parent_path().string();
+}
+
 // Build the link map from the DWARF embedded in the stub init library, whose
 // path is supplied via INIT_DWARF_PATH (set by the build harness, mirroring
 // TEMPLATE_PATH / LINKSTUB_BUILD_CMD). DWARF is the sole source of types; the
@@ -358,6 +372,12 @@ void process_lmap(const std::string &path, const std::string &templatepath, cons
 #else
     std::ifstream in(templatepath);
     std::ofstream out(outpath);
+    // The stub library's directory is on the embedded interpreter's module
+    // search path (like `src`): an installed language module keeps its
+    // scripting half next to its init library, with no PYTHONPATH to set.
+    const std::string init_dir = init_lib_dir();
+    if (!init_dir.empty())
+        out << "#define LINKPY_INIT_LIB_DIR \"" << init_dir << "\"\n";
     out << in.rdbuf();
     in.close();
     out << std::endl;
@@ -416,6 +436,11 @@ int init()
 #ifndef LINKPY_LANG_LUA
     PyObject *sysPath = PySys_GetObject("path");
     PyList_Append(sysPath, PyUnicode_FromString("."));
+    {
+        const std::string init_dir = init_lib_dir();
+        if (!init_dir.empty())
+            PyList_Append(sysPath, PyUnicode_FromString(init_dir.c_str()));
+    }
     // This interpreter's libc may no longer see PYTHONPATH (see la_version);
     // give it the captured one, in order, ahead of the defaults.
     const char *pythonpath = linkpy_getenv("PYTHONPATH");
@@ -487,7 +512,77 @@ static std::vector<std::string> linkstub_cache_material()
     const char *dwarf = linkpy_getenv("INIT_DWARF_PATH");
     m.push_back(dwarf != nullptr ? std::string("@") + dwarf : "");
     const char *cmd = linkpy_getenv("LINKSTUB_BUILD_CMD");
-    m.push_back(cmd != nullptr ? cmd : "make liblinkstub");
+    const std::string command = cmd != nullptr ? cmd : "make liblinkstub";
+    m.push_back(command);
+    m.push_back(init_lib_dir());
+
+    // The build command names sources it compiles (the marshaller) and
+    // include directories (the marshaller's and Python's headers): their
+    // contents are part of the key, as is the compiler binary itself.
+    std::error_code ec;
+    std::vector<std::string> tokens;
+    {
+        std::size_t start = 0;
+        while (start <= command.size())
+        {
+            std::size_t sp = command.find(' ', start);
+            if (sp == std::string::npos)
+                sp = command.size();
+            if (sp > start)
+                tokens.push_back(command.substr(start, sp - start));
+            start = sp + 1;
+        }
+    }
+    for (std::size_t i = 0; i < tokens.size(); i++)
+    {
+        const std::string &tok = tokens[i];
+        if (i == 0)
+        {
+            std::filesystem::path compiler = tok;
+            if (tok.find('/') == std::string::npos)
+            {
+                const char *path = linkpy_getenv("PATH");
+                std::string dirs = path != nullptr ? path : "/usr/bin:/bin";
+                std::size_t s = 0;
+                while (s <= dirs.size())
+                {
+                    std::size_t c = dirs.find(':', s);
+                    if (c == std::string::npos)
+                        c = dirs.size();
+                    std::filesystem::path candidate = std::filesystem::path(dirs.substr(s, c - s)) / tok;
+                    if (std::filesystem::is_regular_file(candidate, ec))
+                    {
+                        compiler = candidate;
+                        break;
+                    }
+                    s = c + 1;
+                }
+            }
+            if (std::filesystem::is_regular_file(compiler, ec))
+            {
+                const auto size = std::filesystem::file_size(compiler, ec);
+                const auto written = std::filesystem::last_write_time(compiler, ec).time_since_epoch().count();
+                m.push_back("compiler:" + compiler.string() + ":" + std::to_string(size) + ":"
+                            + std::to_string(written));
+            }
+            continue;
+        }
+        if (tok.compare(0, 2, "-I") == 0 && tok.size() > 2)
+        {
+            for (const auto &entry : std::filesystem::directory_iterator(tok.substr(2), ec))
+            {
+                const std::string ext = entry.path().extension().string();
+                if ((ext == ".h" || ext == ".hpp") && entry.is_regular_file(ec))
+                    m.push_back("@" + entry.path().string());
+            }
+            ec.clear();
+            continue;
+        }
+        if (tok[0] != '-' && std::filesystem::is_regular_file(tok, ec))
+            m.push_back("@" + tok);
+        ec.clear();
+    }
+    std::sort(m.begin() + 1, m.end()); // directory order is not stable; the set is
     return m;
 }
 
@@ -506,10 +601,26 @@ static std::string linkstub_locate()
 #endif
         return path;
     }
+    // On a cold cache the first process compiles under the key's lock; the
+    // others block on it and then find the entry.
+    const int lock = caching ? linkstub_cache_lock(key) : -1;
+    if (lock >= 0)
+    {
+        path = linkstub_cache_lookup(key);
+        if (!path.empty())
+        {
+            linkstub_cache_unlock(lock);
+            return path;
+        }
+    }
     const std::string built = linkstub_workdir() + "/liblinkstub.so";
     if (init() == 0)
+    {
+        linkstub_cache_unlock(lock);
         return built; // missing; the loader reports it, as before
+    }
     path = caching ? linkstub_cache_store(key, built, linkstub_workdir() + "/linkstub.cpp") : "";
+    linkstub_cache_unlock(lock);
     return path.empty() ? built : path;
 }
 
@@ -521,15 +632,6 @@ unsigned int la_version(unsigned int version)
     // still intact: everything the auditor reads from the environment later
     // comes from this snapshot (linkpy_getenv), see linkstub_cache.hpp.
     linkpy_capture_environment(environ);
-
-    // The auditor has its own copy of libc, whose malloc shares the process's
-    // brk heap with the host's malloc. A host runtime that indexes that heap
-    // (liballocs) assumes every chunk in it is its own, so the auditor's arena
-    // must never grow once the host is running: reserve its growth now, in
-    // one piece, before anything of the host has started.
-    mallopt(M_TOP_PAD, 256 * 1024 * 1024);
-    free(malloc(16));
-    mallopt(M_TOP_PAD, 128 * 1024);
     return LAV_CURRENT;
 }
 

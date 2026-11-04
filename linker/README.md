@@ -279,12 +279,37 @@ This is what lets variable-length data (an HTTP body, a block of headers) cross
 a by-value boundary: a struct with an array of a fixed capacity plus a length.
 See the `python_bytes_array` and `python_str_field` tests.
 
+## Hosting in a long-running program
+
+Three behaviours exist for hosts such as servers that load an init library
+and then configure things before calling into it:
+
+* **The interpreter starts at the first call**, not when the linkstub is
+  loaded (`ensure_vm` in `template.cpp`), so a host may set `PYTHONPATH` or
+  other interpreter settings between loading the library and the first call
+  (`python_env_after_load`).
+* **The init library's directory is on the module search path**, like `src`:
+  a language module can keep its Python half next to its `libinit.so`, with
+  no `PYTHONPATH` to set and none to lose when the host replaces the
+  environment (`python_init_lib_dir`). The auditor emits the directory into the
+  linkstub as `LINKPY_INIT_LIB_DIR`.
+* **The auditor reads its settings from a snapshot taken at process start.**
+  The auditor lives in its own link-map namespace with its own libc, whose
+  `environ` keeps pointing at the original environment block; a host that
+  reuses that block for its process title would leave `getenv` there reading
+  garbage. `la_version` copies the block into static storage (no heap: the
+  host's runtime is not up yet) and `linkpy_getenv` serves it
+  (`python_environ_moved`). The JIT compiler gets that environment explicitly,
+  minus `LD_AUDIT`/`LD_DEBUG`/`LD_PRELOAD`.
+
 ## Quiet by default, the GIL, and the linkstub cache
 
 * **Quiet.** Neither the auditor nor the linkstub prints anything unless asked:
   `-DLINKPY_DEBUG=ON` at configure time for the tools, `-DDEBUG` in
   `LINKSTUB_BUILD_CMD` for the runtime linkstub. The JIT compiler's diagnostics
   stay visible either way (`python_simple_divide` asserts on the silence).
+* **Signals.** The interpreter is started with `Py_InitializeEx(0)`: Python's
+  signal handlers are not installed in the host (`python_no_signal_handlers`).
 * **GIL.** Once the embedded interpreter is up, the linkstub parks the GIL
   (`PyEval_SaveThread`); every trampoline takes it for the duration of its call
   (`GilGuard` in `pycpputils.hpp`). A long-running C host therefore lets Python
@@ -292,8 +317,24 @@ See the `python_bytes_array` and `python_str_field` tests.
   (`python_gil_release`).
 * **Cache.** The compiled `liblinkstub.so` is cached under
   `$LINKPY_CACHE_DIR` (empty disables), else `$XDG_CACHE_HOME/linkpy`, else
-  `~/.cache/linkpy`, keyed by a SHA-256 of the auditor binary, the template(s),
-  the stub library's DWARF and the build command. A second process with the
+  `~/.cache/linkpy`, else (no or unwritable `HOME`, as for a service)
+  `$TMPDIR/linkpy-cache-<uid>`, keyed by a SHA-256 of the auditor binary, the
+  template(s), the stub library's DWARF, the build command and the init
+  library's directory. An entry is only loaded when it, its directory and the
+  cache directory are owned by the current user (or root) and not writable by
+  group or others (`python_linkstub_cache_untrusted`); a failed store prints
+  one line and the process compiles its own. The key also covers every source
+  file and `-I` header directory named in the build command and the compiler
+  binary; entries untouched for 30 days are evicted when a new one is stored;
+  processes starting together on a cold cache share one compile through a
+  lock on the key (`python_linkstub_cache_key`, `python_linkstub_cache_concurrent`).
+  Build the runtime linkstub with `-O2`: it is on the host's request path.
+* **`src`.** The `src` directory next to the working directory is searched for
+  modules only when it exists, as an absolute path (`python_no_src_dir`).
+* **First call from several threads.** The interpreter starts once
+  (`std::call_once`); the thread that started it is the one that finalises it
+  at exit (`python_concurrent_first_call`). An oversized environment entry is
+  skipped with a note rather than cutting the snapshot short (`python_environ_huge`). A second process with the
   same inputs (a forked app server, a restarted test) loads the cached file and
   never runs the compiler (`python_linkstub_cache`). On a hit the auditor also
   skips its load-time check that the Python module defines every stub function;

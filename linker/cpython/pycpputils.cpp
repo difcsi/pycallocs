@@ -1,4 +1,5 @@
 #include <pycpputils.hpp>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -6,9 +7,19 @@ namespace linkpy::py {
 
 void init_py()
 {
-    Py_Initialize();
-    PyObject *sysPath = PySys_GetObject("path");
-    PyList_Append(sysPath, PyUnicode_FromString("src"));
+    // 0: do not install Python's signal handlers; the host is a C program
+    // and SIGINT (or its own handler for it) is the host's business.
+    Py_InitializeEx(0);
+    // `src` next to the working directory is searched for modules (the
+    // convention of LinkPy's own tests), as an absolute path and only when it
+    // exists: a server's working directory is wherever its application lives.
+    std::error_code ec;
+    if (std::filesystem::is_directory("src", ec))
+    {
+        const std::string src = std::filesystem::absolute("src", ec).string();
+        PyObject *sysPath = PySys_GetObject("path");
+        PyList_Append(sysPath, PyUnicode_FromString(src.c_str()));
+    }
 }
 
 PyObject *import_module(const char *name)

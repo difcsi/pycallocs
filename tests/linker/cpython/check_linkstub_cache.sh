@@ -8,7 +8,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 cache=$(mktemp -d)
 trap 'rm -rf "$cache"' EXIT
 export LINKPY_CACHE_DIR=$cache
-export LINKSTUB_BUILD_CMD="sh $here/logged_build.sh $cache/compiles.log $LINKSTUB_BUILD_CMD"
+export LINKPY_TEST_COMPILE_LOG=$cache/compiles.log
+export LINKSTUB_BUILD_CMD="sh $here/logged_build.sh $LINKSTUB_BUILD_CMD"
 "$main" > /dev/null
 "$main" > /dev/null
 n=$(wc -l < "$cache/compiles.log")

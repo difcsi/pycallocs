@@ -5,6 +5,7 @@
 #include <string>
 #include <stdexcept>
 #include <cstring>
+#include <iostream>
 
 // Everything lives in linkpy::py so a cross-language linkstub TU can include
 // this header together with luacpputils.hpp (linkpy::lua) without the

@@ -160,7 +160,7 @@ function(add_linkpy_test name)
     # liblinkstub.so, against the language's marshalling source + libs. Both are
     # named by bare filename: the auditor cd's into its private temp work dir
     # (where it wrote linkstub.cpp) before running this, so the output lands there.
-    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
+    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -O2 -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${marshal_src} \
 -I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
 
@@ -326,7 +326,7 @@ function(add_linkpy_byref_test name)
         VERBATIM)
     add_custom_target(${test_name}_main ALL DEPENDS "${main_exe}")
 
-    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
+    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -O2 -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${marshal_src} \
 -I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${lang_dir} -I${include_dir} ${lang_cflags} ${lang_libs}")
 
@@ -472,7 +472,7 @@ function(add_linkpy_cross_test name)
         set(byref_env ";LINKPY_CROSS_BYREF=1;LD_PRELOAD=${LINKPY_LIBALLOCS_PRELOAD}:${LINKPY_BASETYPES_PROVIDER};LD_LIBRARY_PATH=${LINKPY_LIBALLOCS_DIR}/lib;GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288;META_BASE=${byref_meta};LUA_CPATH=${LINKPY_LUAPROXY_DIR}/?.so")
     endif()
 
-    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -g -shared -fPIC \
+    set(linkstub_cmd "${CMAKE_CXX_COMPILER} -std=c++26 -freflection -O2 -g -shared -fPIC \
 -o liblinkstub.so linkstub.cpp ${LINKPY_ROOT}/cpython/pycpputils.cpp ${LINKPY_ROOT}/lua/luacpputils.cpp \
 -I${LINKPY_ROOT}/common -I${LINKPY_ROOT}/../common -I${LINKPY_ROOT}/cpython -I${LINKPY_ROOT}/lua \
 -I${include_dir} ${callee_flags} ${host_flags} ${callee_libs}")
