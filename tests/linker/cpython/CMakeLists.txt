@@ -168,9 +168,11 @@ set_tests_properties(python_no_src_dir PROPERTIES
 
 # environ_huge: an oversized environment entry is skipped with a notice.
 # linkstub_cache_key: the key covers the compiled marshaller source; stale
-# entries are evicted. linkstub_cache_concurrent: one compile for several
-# processes starting together.
-foreach(check environ_huge linkstub_cache_key linkstub_cache_concurrent)
+# entries are evicted. linkstub_cache_bigfile: a large file the build command
+# names (the Python library) is keyed by size and mtime, and a new mtime
+# misses. linkstub_cache_concurrent: one compile for several processes
+# starting together.
+foreach(check environ_huge linkstub_cache_key linkstub_cache_bigfile linkstub_cache_concurrent)
     add_test(NAME python_${check}
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/check_${check}.sh"
                 $<TARGET_FILE:python_simple_divide_main>)

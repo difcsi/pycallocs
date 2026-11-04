@@ -496,6 +496,22 @@ int init()
 
 static std::string g_linkstub_path;
 
+// A file the build command names, as cache-key material: its contents while
+// it is small (the marshaller's sources and headers, the user's headers: what
+// gets edited, keyed exactly), its path, size and modification time once it
+// is large (libraries and the like, keyed as the compiler binary is). Hashing
+// a few megabytes on every process start was most of a cache-hit start.
+constexpr std::uintmax_t LINKSTUB_HASH_MAX_BYTES = 64 * 1024;
+static std::string linkstub_file_material(const std::filesystem::path &p)
+{
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(p, ec);
+    if (ec || size <= LINKSTUB_HASH_MAX_BYTES)
+        return "@" + p.string();
+    const auto written = std::filesystem::last_write_time(p, ec).time_since_epoch().count();
+    return "stat:" + p.string() + ":" + std::to_string(size) + ":" + std::to_string(written);
+}
+
 // Everything the generated linkstub depends on, for the cache key: the
 // auditor itself (its code generator), the VM template(s), the stub library's
 // DWARF (signatures and struct layouts) and the build command.
@@ -586,13 +602,13 @@ static std::vector<std::string> linkstub_cache_material()
             {
                 const std::string ext = entry.path().extension().string();
                 if ((ext == ".h" || ext == ".hpp") && entry.is_regular_file(ec))
-                    m.push_back("@" + entry.path().string());
+                    m.push_back(linkstub_file_material(entry.path()));
             }
             ec.clear();
             continue;
         }
         if (tok[0] != '-' && std::filesystem::is_regular_file(tok, ec))
-            m.push_back("@" + tok);
+            m.push_back(linkstub_file_material(tok));
         ec.clear();
     }
     std::sort(m.begin() + 1, m.end()); // directory order is not stable; the set is

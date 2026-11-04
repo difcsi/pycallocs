@@ -325,7 +325,10 @@ and then configure things before calling into it:
   group or others (`python_linkstub_cache_untrusted`); a failed store prints
   one line and the process compiles its own. The key also covers every source
   file and `-I` header directory named in the build command and the compiler
-  binary; entries untouched for 30 days are evicted when a new one is stored;
+  binary: files up to 64 KiB by content, larger ones (libraries) by path, size
+  and modification time, as the compiler binary is
+  (`python_linkstub_cache_bigfile`); entries untouched for 30 days are evicted
+  when a new one is stored;
   processes starting together on a cold cache share one compile through a
   lock on the key (`python_linkstub_cache_key`, `python_linkstub_cache_concurrent`).
   Build the runtime linkstub with `-O2`: it is on the host's request path.
