@@ -10,7 +10,7 @@
 #                       embedding mode (needs cffi for ${PYTHON})
 #   bench_lua_py_lupa   Python hosting Lua through lupa; the loop still runs in
 #                       Lua and calls Python (needs lupa, see
-#                       LINKPY_BENCH_LUPA_PYTHON)
+#                       LINKPY_BENCH_LUPA_PYTHON; run by pyrun.c)
 
 if(NOT LINKPY_LUA_INTERP)
     message(STATUS "linkpy: bench_lua_py_* baselines skipped (no lua interpreter found)")
@@ -82,8 +82,23 @@ if(bench_no_lupa)
     message(STATUS "linkpy: bench_lua_py_lupa skipped (${LINKPY_BENCH_LUPA_PYTHON} cannot import lupa; "
                    "create the venv and pip install lupa, or set LINKPY_BENCH_LUPA_PYTHON)")
 else()
+    # LINKPY_BENCH_LUPA_PYTHON only says where lupa is installed. The test is
+    # run by pyrun, a python launcher linked against the libpython the other
+    # routes embed: a distribution's python3 may be linked statically, and
+    # then runs the same callee measurably faster (about 1.6x on this
+    # callee). pyrun prints `info python=shared`, which the driver requires.
+    execute_process(
+        COMMAND "${LINKPY_BENCH_LUPA_PYTHON}" -c
+                "import lupa, os; print(os.path.dirname(os.path.dirname(lupa.__file__)))"
+        OUTPUT_VARIABLE bench_lupa_site OUTPUT_STRIP_TRAILING_WHITESPACE)
+    add_executable(bench_pyrun pyrun.c)
+    set_target_properties(bench_pyrun PROPERTIES
+        OUTPUT_NAME pyrun RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_options(bench_pyrun PRIVATE -O2 -g)
+    target_include_directories(bench_pyrun PRIVATE ${PY_INCLUDES})
+    target_link_libraries(bench_pyrun PRIVATE ${PYTHON_LIB} ${PY_SYSLIBS})
     add_test(NAME bench_lua_py_lupa
-        COMMAND "${LINKPY_BENCH_LUPA_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/app_lupa.py")
+        COMMAND bench_pyrun "${CMAKE_CURRENT_SOURCE_DIR}/app_lupa.py")
     set_tests_properties(bench_lua_py_lupa PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${bench_callee_dir}")
+        ENVIRONMENT "PYTHONPATH=${bench_callee_dir}:${bench_lupa_site}")
 endif()

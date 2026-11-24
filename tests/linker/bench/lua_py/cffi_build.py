@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Build libshapes_cffi.so, the "cffi" route of the Lua -> Python benchmark.
-
-cffi's embedding mode turns Python functions into a C library: the C side
-calls `divide` and `describe` as ordinary functions, and the library starts
-the interpreter and runs the init code below on the first call. Here the init
-code registers the callee's own functions (shapes.py, found on PYTHONPATH at
-run time) with no wrapper in between; `describe` receives the by-value
-`struct Point` as a cffi object, whose `.x` and `.y` it reads as it would any
-other object's.
-
-    cffi_build.py --out <dir>      writes <dir>/libshapes_cffi.so
-"""
+# Build libshapes_cffi.so, the "cffi" route of the Lua -> Python benchmark.
+#
+# cffi's embedding mode turns Python functions into a C library: the C side
+# calls `divide` and `describe` as ordinary functions, and the library starts
+# the interpreter and runs the init code below on the first call. Here the init
+# code registers the callee's own functions (shapes.py, found on PYTHONPATH at
+# run time) with no wrapper in between; `describe` receives the by-value
+# `struct Point` as a cffi object, whose `.x` and `.y` it reads as it would any
+# other object's.
+#
+#     cffi_build.py --out <dir>      writes <dir>/libshapes_cffi.so
+#
+# The prose of this file is in comments, not docstrings, so that the line
+# count the driver takes with `cloc --docstring-as-code` counts the two
+# strings below, which are code, and nothing else that is quoted.
 import argparse
 import os
 
@@ -33,7 +36,7 @@ ffi.def_extern()(shapes.describe)
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description="Build libshapes_cffi.so with cffi's embedding mode.")
     ap.add_argument("--out", required=True, help="directory for the library and cffi's build files")
     args = ap.parse_args()
 

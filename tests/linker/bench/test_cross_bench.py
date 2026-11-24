@@ -67,23 +67,25 @@ class Measure(unittest.TestCase):
             calls.append((route.id, n)); return script[route.id].pop(0)
         return calls, runner
     def ok(self, d): return cb.RunResult(True, {"describe": d}, {}, "")
-    def test_prime_then_interleaved_rounds(self):
-        calls, runner = self.run_with({"hand": [self.ok(9), self.ok(0.2), self.ok(0.3)],
-                                       "polylink-ref": [self.ok(9), self.ok(0.5), self.ok(0.4)]})
+    def test_prime_warm_then_rotated_rounds(self):
+        calls, runner = self.run_with({"hand": [self.ok(9), self.ok(8), self.ok(0.2), self.ok(0.3)],
+                                       "polylink-ref": [self.ok(9), self.ok(8), self.ok(0.5), self.ok(0.4)]})
         data = cb.measure([A, B], {A.ctest: SPEC, B.ctest: SPEC}, 2, 5000, runner)
-        self.assertEqual(calls, [("hand", 1000), ("polylink-ref", 1000),
-                                 ("hand", 5000), ("polylink-ref", 5000),
-                                 ("hand", 5000), ("polylink-ref", 5000)])
-        self.assertEqual(data["hand"].samples["describe"], [0.2, 0.3])   # the priming run is not a sample
+        self.assertEqual(calls, [("hand", 1000), ("polylink-ref", 1000),      # priming
+                                 ("hand", 5000), ("polylink-ref", 5000),      # full-length round, discarded
+                                 ("hand", 5000), ("polylink-ref", 5000),      # round 1 starts at the first route
+                                 ("polylink-ref", 5000), ("hand", 5000)])     # round 2 at the next
+        self.assertEqual(data["hand"].samples["describe"], [0.2, 0.3])
+        self.assertEqual(data["polylink-ref"].samples["describe"], [0.5, 0.4])
     def test_missing_route_is_reported(self):
-        calls, runner = self.run_with({"hand": [self.ok(9), self.ok(0.2)]})
+        calls, runner = self.run_with({"hand": [self.ok(9), self.ok(8), self.ok(0.2)]})
         data = cb.measure([A, B], {A.ctest: SPEC, B.ctest: None}, 1, 5000, runner)
         self.assertEqual(data["polylink-ref"].status, "missing")
         self.assertIn("cross_bench_lua_py_ref", data["polylink-ref"].note)
-        self.assertEqual([c[0] for c in calls], ["hand", "hand"])
+        self.assertEqual([c[0] for c in calls], ["hand", "hand", "hand"])
     def test_failed_route_is_not_rerun(self):
         bad = cb.RunResult(False, {}, {}, "Assertion failed at x")
-        calls, runner = self.run_with({"hand": [self.ok(9), self.ok(0.2), self.ok(0.2)],
+        calls, runner = self.run_with({"hand": [self.ok(9), self.ok(8), self.ok(0.2), self.ok(0.2)],
                                        "polylink-ref": [bad]})
         data = cb.measure([A, B], {A.ctest: SPEC, B.ctest: SPEC}, 2, 5000, runner)
         self.assertEqual(data["polylink-ref"].status, "failed")
@@ -95,12 +97,23 @@ class Rows(unittest.TestCase):
     DATA = {"hand": cb.RouteData("ok", "", {"describe": [0.25, 0.2, 0.3]}, {}),
             "polylink-ref": cb.RouteData("failed", "Assertion failed at x", {}, {})}
     def test_rows(self):
-        rs = cb.rows([A, B], self.DATA, 5000)
+        rs = cb.rows([A, B], self.DATA, 5000, {"hand": 113, "polylink-ref": 31})
         self.assertEqual(rs[0], {"route": "hand", "label": "hand-written bridge", "workload": "describe",
             "status": "ok", "min_us": "0.200", "median_us": "0.250", "rel_to_hand": "1.000",
-            "rounds": "3", "calls": "5000", "note": ""})
+            "rounds": "3", "calls": "5000", "route_loc": "113", "note": ""})
         self.assertEqual(rs[1]["status"], "failed"); self.assertEqual(rs[1]["min_us"], "")
         self.assertEqual(rs[1]["note"], "Assertion failed at x")
+        self.assertEqual(rs[1]["route_loc"], "31")      # the code exists although the run failed
+    def test_route_loc_empty_when_not_counted(self):
+        self.assertEqual(cb.rows([A, B], self.DATA, 5000)[0]["route_loc"], "")
+    def test_rel_is_the_median_of_per_round_ratios(self):
+        d = {"hand": cb.RouteData("ok", "", {"describe": [0.2, 0.4, 0.25]}, {}),
+             "polylink-ref": cb.RouteData("ok", "", {"describe": [0.6, 0.4, 1.0]}, {"view": "proxy"})}
+        self.assertEqual(cb.rows([A, B], d, 10)[1]["rel_to_hand"], "3.000")    # 3.0, 1.0, 4.0; min/min would be 2
+    def test_rel_empty_when_a_baseline_sample_is_zero(self):
+        d = {"hand": cb.RouteData("ok", "", {"describe": [0.0]}, {}),
+             "polylink-ref": cb.RouteData("ok", "", {"describe": [0.4]}, {"view": "proxy"})}
+        self.assertEqual(cb.rows([A, B], d, 1)[1]["rel_to_hand"], "")
     def test_rel_empty_without_baseline(self):
         d = {"hand": cb.RouteData("missing", "no ctest bench_lua_py_hand", {}, {}),
              "polylink-ref": cb.RouteData("ok", "", {"describe": [0.4]}, {"view": "proxy"})}
@@ -110,7 +123,7 @@ class Rows(unittest.TestCase):
             p = os.path.join(t, "f.csv"); cb.write_csv(cb.rows([A, B], self.DATA, 5000), p)
             with open(p) as f:
                 self.assertEqual(f.readline().strip(),
-                    "route,label,workload,status,min_us,median_us,rel_to_hand,rounds,calls,note")
+                    "route,label,workload,status,min_us,median_us,rel_to_hand,rounds,calls,route_loc,note")
 
 class Exit(unittest.TestCase):
     OK = cb.RouteData("ok", "", {"describe": [0.2]}, {})
@@ -138,6 +151,64 @@ class Routes(unittest.TestCase):
             ("polylua-native", "cross_bench_lua_py_native")])
         self.assertEqual(cb.ROUTES[4].expect_info, {"view": "proxy"})
         self.assertEqual(cb.ROUTES[5].expect_info, {"view": "native"})
+        self.assertEqual(cb.ROUTES[2].expect_info, {"python": "shared"})   # lupa must run the libpython the others embed
+    def test_sources_exist_and_exclude_what_is_shared(self):
+        for r in cb.ROUTES:
+            self.assertTrue(r.sources, r.id)
+            for path in r.sources:
+                self.assertTrue(os.path.isfile(os.path.join(cb.REPO, path)), path)
+                self.assertNotIn(os.path.basename(path), ("benchloop.lua", "shapes.py", "CMakeLists.txt"))
+
+CLOC = """{"header" : {"cloc_version" : "2.06", "n_files" : 2},
+"/r/tests/a.c" :{"blank": 15, "comment": 16, "code": 103, "language": "C"},
+"/r/tests/app.lua" :{"blank": 2, "comment": 5, "code": 10, "language": "Lua"},
+"SUM": {"blank": 17, "comment": 21, "code": 113, "nFiles": 2} }"""
+
+class Loc(unittest.TestCase):
+    R = cb.Route("hand", "hand-written bridge", "t", {}, ("tests/a.c", "tests/app.lua"))
+    def test_parse_cloc_json(self):
+        counts, version = cb.parse_cloc_json(CLOC, "/r")
+        self.assertEqual(counts, {"tests/a.c": 103, "tests/app.lua": 10})
+        self.assertEqual(version, "2.06")
+    def test_route_loc_sums_a_routes_files(self):
+        self.assertEqual(cb.route_loc([self.R], {"tests/a.c": 103, "tests/app.lua": 10}), {"hand": 113})
+    def test_route_loc_unknown_when_a_file_was_not_counted(self):
+        self.assertEqual(cb.route_loc([self.R], {"tests/a.c": 103}), {"hand": None})
+
+class Figure(unittest.TestCase):
+    DATA = {"hand": cb.RouteData("ok", "", {"describe": [0.25, 0.27, 0.26], "divide": [0.06, 0.06, 0.06]}, {}),
+            "polylink-ref": cb.RouteData("failed", "Assertion failed at x", {}, {})}
+    def bars(self):
+        return cb.figure_bars([A, B], self.DATA, {"hand": 113, "polylink-ref": 31})
+    def test_bars_are_median_describe_and_loc(self):
+        self.assertEqual(self.bars(), [cb.Bar("hand", "hand-written bridge", 0.26, 113),
+                                       cb.Bar("polylink-ref", "PolyLink by reference", None, 31)])
+    def test_tikz_carries_values_placeholders_and_provenance(self):
+        t = cb.render_tikz(self.bars(), ["generated by a test"])
+        self.assertTrue(t.startswith("% generated by a test\n"))
+        self.assertIn("\\begin{tikzpicture}", t)
+        self.assertTrue(t.rstrip().endswith("\\end{tikzpicture}"))
+        for piece in ("{0.26}", "{113}", "{31}", "{?}", "hand-written\\\\bridge", "PolyLink\\\\by reference"):
+            self.assertIn(piece, t)
+    def test_tikz_without_line_counts_or_measurements(self):
+        t = cb.render_tikz([cb.Bar("hand", "hand-written bridge", None, None)], [])
+        self.assertIn("{?}", t); self.assertNotIn("None", t); self.assertNotIn("nan", t)
+    def test_tallest_bar_fills_the_plot(self):
+        self.assertEqual(cb.bar_height(1.04, 1.04), cb.PLOT_HEIGHT)
+        self.assertEqual(cb.bar_height(0.52, 1.04), cb.PLOT_HEIGHT / 2)
+        self.assertEqual(cb.bar_height(5, 0), 0)
+    def test_axis_ticks(self):
+        self.assertEqual(cb.axis_ticks(1.04), [0.5, 1.0])
+        self.assertEqual(cb.axis_ticks(0.43), [0.2, 0.4])
+        self.assertEqual(cb.axis_ticks(113), [50, 100])
+        self.assertEqual(cb.axis_ticks(31), [10, 20, 30])
+        self.assertEqual(cb.axis_ticks(0), [])
+
+class Provenance(unittest.TestCase):
+    def test_cmake_cache_values(self):
+        text = "// comment\nPYTHON_LIB:FILEPATH=/usr/lib/libpython3.14.so\nCMAKE_BUILD_TYPE:STRING=RelWithDebInfo\nX:BOOL=ON\n"
+        self.assertEqual(cb.cmake_cache_values(text, ["PYTHON_LIB", "CMAKE_BUILD_TYPE", "ABSENT"]),
+                         {"PYTHON_LIB": "/usr/lib/libpython3.14.so", "CMAKE_BUILD_TYPE": "RelWithDebInfo", "ABSENT": None})
 
 if __name__ == "__main__":
     unittest.main()

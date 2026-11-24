@@ -2,24 +2,33 @@
 """cross_bench.py [-B build_dir] [-r rounds] [-n calls] [--routes a,b,...]
                [--out dir] [--timeout seconds] [--allow-missing]
 
-Microseconds per Lua -> Python call, by route: a bridge written by hand, cffi
-in embedding mode, lupa, and PolyLink by value, by reference, and by reference
-from the contrib/lua fork (a native foreign value). Every route is a ctest of
-the LinkPy build that runs the same Lua loop (lua_py/benchloop.lua) against the
-same Python callee and prints `bench <workload>: <us> us/call`; this script
-runs them pinned to one core (BENCH_CPU, default 2), interleaved within each
-round, and reports min and median over the rounds, as wall_bench.sh does. The
-workload the report's figure uses is `describe` (a struct Point in, the sum of
-its fields out); `divide` (two ints in, a float out) is the fixed cost of a
-call, on the routes that have it.
+Microseconds per Lua -> Python call, by route, and the lines of code each
+route takes: a bridge written by hand, cffi in embedding mode, lupa, and
+PolyLink by value, by reference, and by reference from the contrib/lua fork
+(a native foreign value). Every route is a ctest of the LinkPy build that runs
+the same Lua loop (lua_py/benchloop.lua) against the same Python callee and
+prints `bench <workload>: <us> us/call`. The workload the report's figure uses
+is `describe` (a struct Point in, the sum of its fields out); `divide` (two
+ints in, a float out) is the fixed cost of a call, on the routes that have it.
+
+Method: each route is run once with 1000 calls (the linkstub is compiled and
+cached, the route is validated), then every route once at full length with the
+result thrown away (the core leaves whatever state the priming left it in),
+then the rounds, pinned to one core (BENCH_CPU, default 2), each round
+starting one route further down the list. Reported per route and workload:
+min and median over the rounds, and the median over the rounds of the ratio to
+the hand-written bridge in the same round. Lines of code are counted with cloc
+over the files that exist for one route only (Route.sources).
 
 A route that is not in the build is reported as `missing`, one that does not
 produce a checked `describe` time as `failed`, each with the reason; the others
 are still measured. Exit status 0 when every selected route was measured,
 1 otherwise (--allow-missing forgives `missing`, never `failed`), 2 on a usage
-error. Writes <out>/figure10.csv and <out>/figure10.json (default
-<build>/bench/fig10/) and keeps its own linkstub cache there. Take the numbers
-on a quiet machine and compare runs made the same way only (README.md).
+error. Writes, under <out> (default <build>/bench/fig10/), figure10.csv,
+figure10.json (every sample, commits, machine, build settings) and
+figure10.tex (the figure, as a tikzpicture), and keeps its own linkstub cache
+there. Take the numbers on a quiet machine and compare runs made the same way
+only (README.md).
 
   cross_bench.py                       # every route, 7 rounds of 200000 calls
   cross_bench.py -r 2 -n 20000 --allow-missing    # a quick look
@@ -29,6 +38,7 @@ import argparse
 import csv
 import datetime
 import json
+import math
 import os
 import platform
 import re
@@ -49,21 +59,34 @@ class Route:
     label: str        # the bar's label in the figure
     ctest: str        # the test that runs this route
     expect_info: dict = field(default_factory=dict)   # `info k=v` lines the run must print
+    sources: tuple = ()   # the files that exist for this route only, relative to the repository
 
 
+_BASE = "tests/linker/bench/lua_py/"
+_CROSS = "tests/linker/cross/"
+_BYREF = (_CROSS + "bench_lua_py_ref/include/shapes.py.h", _CROSS + "bench_lua_py_ref/src/app.lua",
+          _CROSS + "bench_lua_py_ref/clib/points.c")
+
+# `sources` is what a route needs besides the callee (shapes.py) and the timing
+# loop (benchloop.lua), which all share: its glue and its caller. Build-system
+# lines are not counted for any route.
 ROUTES = [
-    Route("hand", "hand-written bridge", "bench_lua_py_hand"),
-    Route("cffi", "cffi", "bench_lua_py_cffi"),
-    Route("lupa", "lupa", "bench_lua_py_lupa"),
-    Route("polylink-value", "PolyLink by value", "cross_bench_lua_py"),
-    Route("polylink-ref", "PolyLink by reference", "cross_bench_lua_py_ref", {"view": "proxy"}),
-    Route("polylua-native", "PolyLua native view", "cross_bench_lua_py_native", {"view": "native"}),
+    Route("hand", "hand-written bridge", "bench_lua_py_hand", {},
+          (_BASE + "handbridge.c", _BASE + "app_hand.lua")),
+    Route("cffi", "cffi", "bench_lua_py_cffi", {},
+          (_BASE + "cffi_build.py", _BASE + "cffishim.c", _BASE + "app_cffi.lua")),
+    # lupa's launcher must run the shared libpython every other route embeds.
+    Route("lupa", "lupa", "bench_lua_py_lupa", {"python": "shared"}, (_BASE + "app_lupa.py",)),
+    Route("polylink-value", "PolyLink by value", "cross_bench_lua_py", {},
+          (_CROSS + "bench_lua_py/include/shapes.py.h", _CROSS + "bench_lua_py/src/app.lua")),
+    Route("polylink-ref", "PolyLink by reference", "cross_bench_lua_py_ref", {"view": "proxy"}, _BYREF),
+    Route("polylua-native", "PolyLua native view", "cross_bench_lua_py_native", {"view": "native"}, _BYREF),
 ]
 WORKLOADS = ("describe", "divide")
 BASELINE = "hand"
 PRIME_CALLS = 1000
 COLUMNS = ["route", "label", "workload", "status", "min_us", "median_us",
-           "rel_to_hand", "rounds", "calls", "note"]
+           "rel_to_hand", "rounds", "calls", "route_loc", "note"]
 
 
 @dataclass
@@ -177,10 +200,13 @@ def check_run(route, exit_code, text):
 # ----------------------------------------------------------------- measuring
 def measure(routes, specs, rounds, calls, runner: Callable):
     """Run every route: once to prime it (the linkstub is compiled and cached,
-    the route is validated), then `rounds` times with `calls` calls, the routes
-    interleaved within each round. `specs` maps a ctest name to its TestSpec or
-    None; `runner(route, spec, calls)` returns a RunResult. A route that fails
-    once is not run again."""
+    the route is validated), once at full length with the result thrown away
+    (so that no route is timed in the state the priming left the core in),
+    then `rounds` times with `calls` calls. Within a round the routes run one
+    after the other, and each round starts one route further down the list, so
+    that none is always the one that follows another. `specs` maps a ctest name
+    to its TestSpec or None; `runner(route, spec, calls)` returns a RunResult.
+    A route that fails once is not run again."""
     data = {}
     for route in routes:
         if specs.get(route.ctest) is None:
@@ -188,10 +214,11 @@ def measure(routes, specs, rounds, calls, runner: Callable):
         else:
             data[route.id] = RouteData("ok", "", {}, {})
 
+    def healthy():
+        return [r for r in routes if data[r.id].status == "ok"]
+
     def run(route, n, keep):
         d = data[route.id]
-        if d.status != "ok":
-            return
         result = runner(route, specs[route.ctest], n)
         d.info.update(result.info)
         if not result.ok:
@@ -200,24 +227,41 @@ def measure(routes, specs, rounds, calls, runner: Callable):
             for workload, us in result.times.items():
                 d.samples.setdefault(workload, []).append(us)
 
-    for route in routes:
+    for route in healthy():
         run(route, PRIME_CALLS, keep=False)
-    for _ in range(rounds):
-        for route in routes:
-            run(route, calls, keep=True)
+    for route in healthy():
+        run(route, calls, keep=False)
+    for r in range(rounds):
+        order = healthy()
+        start = r % len(order) if order else 0
+        for route in order[start:] + order[:start]:
+            if data[route.id].status == "ok":
+                run(route, calls, keep=True)
     return data
 
 
-def rows(routes, data, calls):
+def _rel(samples, base):
+    """Median over the rounds of this route's time over the baseline's in the
+    same round: the two were taken moments apart, so drift of the machine
+    during the run cancels. Empty when there is no usable baseline."""
+    if not base or len(base) != len(samples) or min(base) <= 0:
+        return ""
+    return f"{statistics.median(s / b for s, b in zip(samples, base)):.3f}"
+
+
+def rows(routes, data, calls, loc=None):
     """The table: for a measured route one row per workload it has samples
-    for, for any other route one row that says why not."""
+    for, for any other route one row that says why not. `loc` maps a route id
+    to its lines of code (route_loc), when they were counted."""
     base = data.get(BASELINE)
     out = []
     for route in routes:
         d = data[route.id]
+        lines = (loc or {}).get(route.id)
         row = {"route": route.id, "label": route.label, "workload": "", "status": d.status,
                "min_us": "", "median_us": "", "rel_to_hand": "", "rounds": "",
-               "calls": str(calls), "note": d.note}
+               "calls": str(calls), "route_loc": "" if lines is None else str(lines),
+               "note": d.note}
         if d.status != "ok":
             out.append(row)
             continue
@@ -225,13 +269,11 @@ def rows(routes, data, calls):
             samples = d.samples.get(workload)
             if not samples:
                 continue
-            rel = ""
-            if base is not None and base.status == "ok" and base.samples.get(workload):
-                rel = f"{min(samples) / min(base.samples[workload]):.3f}"
+            base_samples = base.samples.get(workload) if base is not None and base.status == "ok" else None
             out.append({**row, "workload": workload,
                         "min_us": f"{min(samples):.3f}",
                         "median_us": f"{statistics.median(samples):.3f}",
-                        "rel_to_hand": rel, "rounds": str(len(samples))})
+                        "rel_to_hand": _rel(samples, base_samples), "rounds": str(len(samples))})
     return out
 
 
@@ -247,6 +289,155 @@ def exit_status(data, *, allow_missing):
     if "failed" in statuses or ("missing" in statuses and not allow_missing):
         return 1
     return 0
+
+
+# ------------------------------------------------------------ lines of code
+def parse_cloc_json(text, root):
+    """({path relative to root: lines of code}, cloc version) from the output
+    of `cloc --json --by-file`."""
+    doc = json.loads(text)
+    version = doc.get("header", {}).get("cloc_version")
+    counts = {}
+    for path, entry in doc.items():
+        if path in ("header", "SUM") or "code" not in entry:
+            continue
+        counts[os.path.relpath(path, root) if os.path.isabs(path) else path] = entry["code"]
+    return counts, version
+
+
+def count_sources(routes, repo=REPO):
+    """Lines of code of every route's sources, by cloc: ({path: lines}, cloc
+    version), or ({}, None) when cloc cannot be run. A string that holds code
+    (the interface cffi is given, the Lua chunk lupa runs) is counted as code,
+    which is why the two Python files keep their prose in comments."""
+    paths = sorted({os.path.join(repo, p) for r in routes for p in r.sources})
+    try:
+        out = subprocess.run(["cloc", "--json", "--by-file", "--quiet", "--docstring-as-code", *paths],
+                             capture_output=True, text=True, check=True).stdout
+        return parse_cloc_json(out, repo)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return {}, None
+
+
+def route_loc(routes, counts):
+    """{route id: lines of code of its sources}; None for a route one of whose
+    files was not counted."""
+    return {r.id: sum(counts[p] for p in r.sources) if all(p in counts for p in r.sources) else None
+            for r in routes}
+
+
+# ------------------------------------------------------------------- figure
+@dataclass
+class Bar:
+    id: str
+    label: str
+    cost: object      # median us per call of `describe`, or None when not measured
+    loc: object       # lines of code of the route, or None when not counted
+
+
+PLOT_HEIGHT = 3.6     # cm, the height of the tallest bar of each kind
+_PITCH = 1.8          # cm from one route to the next
+_BAR = 0.68           # cm, the width of a bar
+_GAP = 0.04           # cm from the centre of a route to each of its two bars
+
+
+def figure_bars(routes, data, loc):
+    bars = []
+    for route in routes:
+        d = data[route.id]
+        samples = d.samples.get("describe") if d.status == "ok" else None
+        bars.append(Bar(route.id, route.label,
+                        statistics.median(samples) if samples else None,
+                        (loc or {}).get(route.id)))
+    return bars
+
+
+def bar_height(value, top):
+    """Height in cm of a bar of `value` in a plot whose tallest is `top`."""
+    return PLOT_HEIGHT * value / top if top > 0 else 0
+
+
+def axis_ticks(top):
+    """Tick values for an axis from 0 to `top`: the coarsest step of the form
+    1, 2 or 5 times a power of ten that gives at least two ticks."""
+    if top <= 0:
+        return []
+    exponent = math.floor(math.log10(top))
+    for e in (exponent, exponent - 1):
+        for m in (5, 2, 1):
+            step = m * 10 ** e
+            n = int(top / step + 1e-9)
+            if n >= 2:
+                return [round(step * k, 10) for k in range(1, n + 1)]
+    return []
+
+
+def _cm(x):
+    return f"{x:.3f}".rstrip("0").rstrip(".")
+
+
+def render_tikz(bars, header):
+    """The figure as a tikzpicture: per route a bar for the per-call cost
+    (left axis) and one for the lines of code (right axis), each kind scaled
+    to its own tallest; a route without a measurement gets a dashed outline
+    and a question mark. `header` lines become comments at the top."""
+    top_cost = max((b.cost for b in bars if b.cost is not None), default=0)
+    top_loc = max((b.loc for b in bars if b.loc is not None), default=0)
+    base = next((b.cost for b in bars if b.id == BASELINE and b.cost is not None), None)
+    base_h = bar_height(base, top_cost) if base is not None else None
+    unknown_h = base_h if base_h else PLOT_HEIGHT / 4
+    width, top = _PITCH * len(bars), PLOT_HEIGHT + 0.6
+
+    def swatch(colour):
+        return r"\fcolorbox{black}{%s}{\rule{0pt}{0.7ex}\rule{0.7ex}{0pt}}" % colour
+
+    out = ["% " + line for line in header]
+    out.append(r"\begin{tikzpicture}[x=1cm, y=1cm, >=Latex, font=\footnotesize]")
+    out.append(r"  \draw (0,0) -- (%s,0);" % _cm(width))
+    out.append(r"  \draw[->] (0,0) -- (0,%s) node[above, anchor=south west, xshift=-6mm, font=\scriptsize] "
+               r"{%s\ per-call cost ($\mu$s)};" % (_cm(top), swatch("blue!15")))
+    for t in axis_ticks(top_cost):
+        y = _cm(bar_height(t, top_cost))
+        out.append(r"  \draw (0,%s) -- (-0.08,%s) node[left, font=\scriptsize] {%g};" % (y, y, t))
+    if top_loc > 0:
+        out.append(r"  \draw[->] (%s,0) -- (%s,%s) node[above, anchor=south east, xshift=6mm, font=\scriptsize] "
+                   r"{%s\ lines of code};" % (_cm(width), _cm(width), _cm(top), swatch("orange!25")))
+        for t in axis_ticks(top_loc):
+            y = _cm(bar_height(t, top_loc))
+            out.append(r"  \draw (%s,%s) -- (%s,%s) node[right, font=\scriptsize] {%g};"
+                       % (_cm(width), y, _cm(width + 0.08), y, t))
+    if base_h:
+        out.append(r"  \draw[gray!60, densely dashed] (0,%s) -- (%s,%s);" % (_cm(base_h), _cm(width), _cm(base_h)))
+        out.append(r"  \node[right, font=\scriptsize, text=gray!70] at (%s,%s) {baseline};"
+                   % (_cm(width + 0.7), _cm(base_h)))
+    for i, b in enumerate(bars):
+        centre = _PITCH * (i + 0.5)
+        x0, x1 = centre - _GAP - _BAR, centre - _GAP
+        if b.cost is not None:
+            h, style, text = bar_height(b.cost, top_cost), "fill=blue!15", f"{b.cost:.2f}"
+        else:
+            h, style, text = unknown_h, "gray, densely dashed", "?"
+        out.append(r"  \draw[%s] (%s,0) rectangle (%s,%s);" % (style, _cm(x0), _cm(x1), _cm(h)))
+        out.append(r"  \node[above, font=\scriptsize] at (%s,%s) {%s};" % (_cm((x0 + x1) / 2), _cm(h), text))
+        if b.loc is not None:
+            x0, x1, h = centre + _GAP, centre + _GAP + _BAR, bar_height(b.loc, top_loc)
+            out.append(r"  \draw[fill=orange!25] (%s,0) rectangle (%s,%s);" % (_cm(x0), _cm(x1), _cm(h)))
+            out.append(r"  \node[above, font=\scriptsize] at (%s,%s) {%d};" % (_cm((x0 + x1) / 2), _cm(h), b.loc))
+        out.append(r"  \node[below, align=center, font=\scriptsize] at (%s,0) {%s};"
+                   % (_cm(centre), b.label.replace(" ", r"\\", 1)))
+    out.append(r"\end{tikzpicture}")
+    return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------- provenance
+def cmake_cache_values(text, names):
+    """{name: value or None} for the named entries of a CMakeCache.txt."""
+    found = {}
+    for line in text.splitlines():
+        m = re.match(r"([A-Za-z0-9_]+):[A-Z]+=(.*)$", line)
+        if m and m.group(1) in names:
+            found[m.group(1)] = m.group(2)
+    return {name: found.get(name) for name in names}
 
 
 # ------------------------------------------------------------------ running
@@ -293,7 +484,7 @@ def _cpu_model():
 
 
 def _print_table(table):
-    heads = ["route", "workload", "status", "min_us", "median_us", "rel_to_hand", "rounds", "note"]
+    heads = ["route", "workload", "status", "min_us", "median_us", "rel_to_hand", "rounds", "route_loc", "note"]
     widths = {h: max(len(h), *(len(r[h]) for r in table)) for h in heads[:-1]}
     print("  ".join(h.ljust(widths[h]) for h in heads[:-1]) + "  note")
     for r in table:
@@ -361,31 +552,60 @@ def main(argv=None):
         return run_subprocess(route, spec, calls, cpu=cpu, cache_dir=cache_dir, timeout=args.timeout)
 
     data = measure(routes, specs, args.rounds, args.calls, runner)
-    table = rows(routes, data, args.calls)
-
+    counts, cloc_version = count_sources(routes)
+    if cloc_version is None:
+        print("cross_bench: cloc could not be run; route_loc is left empty", file=sys.stderr)
+    loc = route_loc(routes, counts)
+    table = rows(routes, data, args.calls, loc)
     write_csv(table, os.path.join(out, "figure10.csv"))
-    fork = specs.get("cross_bench_lua_py_native")
+
+    repo = _git(REPO)
+    try:
+        with open(os.path.join(build, "CMakeCache.txt")) as f:
+            build_config = cmake_cache_values(f.read(), [
+                "CMAKE_BUILD_TYPE", "PYTHON_LIB", "LINKPY_LUA_INTERP", "LINKPY_POLYLUA_INTERP",
+                "LINKPY_LIBALLOCS_PRELOAD", "LINKPY_BENCH_LUPA_PYTHON"])
+    except OSError:
+        build_config = {}
+    fork = build_config.get("LINKPY_POLYLUA_INTERP")
     meta = {
         "date": started,
-        "repo": _git(REPO),
-        "lua_fork": _git(os.path.dirname(fork.command[0])) if fork else None,
+        "repo": repo,
+        "lua_fork": _git(os.path.dirname(fork)) if fork else None,
         "cpu_model": _cpu_model(),
         "pinned_cpu": cpu,
         "load_1min_at_start": load,
         "kernel": platform.release(),
         "build": build,
+        "build_config": build_config,
+        "cloc_version": cloc_version,
         "rounds": args.rounds,
         "calls": args.calls,
         "routes": {r.id: {"label": r.label, "ctest": r.ctest,
                           "command": specs[r.ctest].command if specs[r.ctest] else None,
+                          "environment": {k: v for k, v in (specs[r.ctest].env if specs[r.ctest] else {}).items()
+                                          if k in ("LD_AUDIT", "LD_PRELOAD", "LINKPY_CROSS_BYREF", "PYTHONPATH")},
+                          "route_loc": loc[r.id],
+                          "sources": {p: counts.get(p) for p in r.sources},
                           **asdict(data[r.id])} for r in routes},
     }
     with open(os.path.join(out, "figure10.json"), "w") as f:
         json.dump(meta, f, indent=2)
         f.write("\n")
 
+    commit = (repo["commit"][:7] + (", modified tree" if repo["dirty"] else "")) if repo else "unknown commit"
+    header = [
+        f"Generated by tests/linker/bench/cross_bench.py (pycallocs {commit}) on {started}; do not edit.",
+        f"{_cpu_model()}, cpu {cpu}, {args.rounds} rounds of {args.calls} calls.",
+        "Blue: median microseconds per call of describe(Point). Orange: lines of code that exist",
+        f"for the route only, by cloc {cloc_version}. Each kind of bar is scaled to its own tallest.",
+        "To regenerate, run the script and copy <build>/bench/fig10/figure10.tex over this file.",
+    ]
+    with open(os.path.join(out, "figure10.tex"), "w") as f:
+        f.write(render_tikz(figure_bars(routes, data, loc), header))
+
     _print_table(table)
-    print(f"written: {os.path.join(out, 'figure10.csv')} and figure10.json", file=sys.stderr)
+    print(f"written: figure10.csv, figure10.json and figure10.tex in {out}", file=sys.stderr)
     return exit_status(data, allow_missing=args.allow_missing)
 
 

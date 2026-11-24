@@ -35,14 +35,13 @@ tests/linker/bench/unit_bench.sh upstream=$HOME/Develop/unit-baseline/build/sbin
 
 ## Lua → Python by route (`cross_bench.py`)
 
-What one call from Lua into Python costs, depending on what carries it. Every
-route is a ctest that runs the same Lua loop (`lua_py/benchloop.lua`: 1000
-checked warm-up calls, then `LINKPY_BENCH_CALLS` timed ones) against the same
-Python file (`tests/linker/cross/bench_lua_py/src/shapes.py`) and prints the
-`bench <workload>: <µs> us/call` line of the other fixtures. The script reads
-each test's command and environment from `ctest --show-only=json-v1`, runs
-every route once to prime it, then the rounds, routes interleaved, pinned to
-`BENCH_CPU`.
+What one call from Lua into Python costs, depending on what carries it, and
+how much code each way of carrying it takes. Every route is a ctest that runs
+the same Lua loop (`lua_py/benchloop.lua`: 1000 checked warm-up calls, then
+`LINKPY_BENCH_CALLS` timed ones, in CPU time, `os.clock`) against the same
+Python file (`tests/linker/cross/bench_lua_py/src/shapes.py`) on the same
+CPython (the build's `PYTHON_LIB`), and prints the `bench <workload>: <µs>
+us/call` line of the other fixtures.
 
 | route | ctest | what carries the call | how the struct crosses |
 |---|---|---|---|
@@ -58,7 +57,38 @@ Two workloads. `describe(p)` returns `p.x + p.y` of a `struct Point` holding
 in how the aggregate crosses. `divide(6, 3)`, two ints in and a float out, is
 the fixed cost of a call; the two by-reference routes do not run it.
 
-What to keep in mind when reading the numbers:
+### How it measures
+
+The script reads each test's command and environment from
+`ctest --show-only=json-v1` and runs it itself, pinned to `BENCH_CPU`:
+
+1. every route once with 1000 calls: the linkstub is compiled and cached, and
+   a route that cannot run is found before anything is timed;
+2. every route once at full length, result thrown away, so that no route is
+   timed in the state the priming left the core in (a route that aborts under
+   liballocs leaves it idle for ten seconds, and the next one then runs
+   faster than it ever does again);
+3. the rounds, each starting one route further down the list.
+
+Per route and workload it reports the min and the median over the rounds, and
+`rel_to_hand`: the median over the rounds of the route's time divided by the
+`hand` route's time *in the same round*. The two were taken moments apart, so
+drift of the machine during the run cancels in the ratio; dividing one
+route's best round by another's does not have that property.
+
+Lines of code (`route_loc`) are counted with
+`cloc --by-file --docstring-as-code` over the files that exist for one route
+only, `Route.sources` in the script: its glue and its caller, that is
+everything it needs besides the callee and the timing loop, which all routes
+share. Build-system lines are counted for no route (each needs some: a C
+module to compile, a generator to run, stubs to generate), nor is `pyrun.c`,
+which exists only to make the comparison fair. Strings that hold code, the
+interface text cffi is given and the Lua chunk lupa runs, count as code. The
+two by-reference routes have the same files, hence the same count; theirs
+includes `clib/points.c`, the helper a host needs today to obtain a typed
+object. `figure10.json` has the count of every file, for a different rule.
+
+### What to keep in mind when reading the numbers
 
 * The baselines run as they would be used, without the auditor and without
   the liballocs preload. The by-reference routes need both.
@@ -66,13 +96,25 @@ What to keep in mind when reading the numbers:
   callables up once and holds the GIL from load to exit. PolyLink resolves the
   callable on every call, so that a reload is seen, and parks the GIL between
   calls (`docs/LINKPY_OVERHEAD_2026-11-02.md`, section 2, prices both).
+* By value against by reference is not "a copy against no copy" alone. On
+  every call the by-reference host wrapper does `require("luaproxy")` and
+  `address_of` through two `lua_pcall`s (`linker/lua/luacpputils.cpp`), the
+  Python side calls `allocs.proxy_from_address`
+  (`linker/cpython/pycpputils.cpp`), and the whole process, CPython's
+  allocator included, runs under the liballocs preload, which the by-value
+  route does not. A control for the last point (the by-value route and `hand`
+  under the same preload) is not part of the script.
 * `polylua-native` still goes through the generated host wrapper; only the
   argument is native. Calling the linkstub's symbol straight from
   `allocs.load`, with no wrapper, needs liballocs metadata for the
   JIT-compiled linkstub and is not implemented
   (`docs/CROSS_LANGUAGE_OPEN_QUESTIONS.md`, question 5).
 * lupa brings its own Lua; `figure10.json` records which (`info lua=`), and
-  the lupa version.
+  the lupa version. Its test is run by `lua_py/pyrun.c`, a launcher linked
+  against `PYTHON_LIB`, not by the `python3` binary lupa is installed for: a
+  distribution's `python3` may be linked statically, and then runs this
+  callee about 1.6 times faster than the shared library the other routes
+  embed. The launcher prints `info python=shared` and the script requires it.
 * The by-reference app first has Python write to the object and reads the
   write back in Lua, and both by-reference routes print which kind of value
   they handed over (`info view=proxy` / `view=native`); the script fails a
@@ -87,20 +129,30 @@ for `polylua-native`, cffi for `cffi`, and for `lupa` an interpreter that can
 import it (`-DLINKPY_BENCH_LUPA_PYTHON`, default the venv below). Re-run
 `cmake` after installing one.
 
+### Reproducing the report's figure
+
+Needs, besides the LinkPy build: `cloc`, `taskset`, cffi for the build's
+`python3`, and lupa (2.8 was used) in a venv of the same `python3`.
+
 ```sh
 python3 -m venv linker/build/bench/venv && linker/build/bench/venv/bin/pip install lupa
 cmake linker/build && cmake --build linker/build -j
-tests/linker/bench/cross_bench.py                 # 7 rounds of 200000 calls
-tests/linker/bench/cross_bench.py -r 2 -n 20000 --allow-missing   # a quick look
 python3 tests/linker/bench/test_cross_bench.py    # the script's own tests
+tests/linker/bench/cross_bench.py                 # 7 rounds of 200000 calls
+cp linker/build/bench/fig10/figure10.tex <report>/link/fig_call_overhead.tex
 ```
 
-Output, under `<build>/bench/fig10/`: `figure10.csv` with the columns
-`route,label,workload,status,min_us,median_us,rel_to_hand,rounds,calls,note`
-(`label` is the bar's name in the report; `rel_to_hand` is `min_us` over the
-`hand` route's for the same workload), and `figure10.json` with every sample,
-the commits, the machine and its load. The report's per-route figure is the
-`min_us` of the `describe` rows, its baseline the `hand` row. Where `min_us`
-and `median_us` differ by more than a few percent, look at the samples: the
-first route of the first round runs on a core that has just been idle, and can
-come out faster there than in any later round.
+`tests/linker/bench/cross_bench.py -r 2 -n 20000 --allow-missing` is a quick
+look. Output, under `<build>/bench/fig10/`:
+
+* `figure10.csv`, columns
+  `route,label,workload,status,min_us,median_us,rel_to_hand,rounds,calls,route_loc,note`
+  (`label` is the bar's name in the report);
+* `figure10.json`: every sample, the `info` lines, each route's command and
+  environment, the per-file line counts, the commits of this repository and
+  of the Lua fork, the build's settings, the machine and its load;
+* `figure10.tex`: the figure itself, a `tikzpicture` the report `\input`s.
+  Per route it draws the median of the `describe` samples (left axis) and
+  `route_loc` (right axis), each scaled to its own tallest bar, a dashed line
+  at the `hand` route's cost, and a dashed outline with a question mark for a
+  route that was not measured. Nothing in it is typed by hand.
