@@ -6,6 +6,11 @@
 # the auditor or the liballocs preload.
 #
 #   bench_lua_py_hand   a Lua C module written against the CPython API
+#   bench_lua_py_cffi   a Lua C module calling a library cffi generated in
+#                       embedding mode (needs cffi for ${PYTHON})
+#   bench_lua_py_lupa   Python hosting Lua through lupa; the loop still runs in
+#                       Lua and calls Python (needs lupa, see
+#                       LINKPY_BENCH_LUPA_PYTHON)
 
 if(NOT LINKPY_LUA_INTERP)
     message(STATUS "linkpy: bench_lua_py_* baselines skipped (no lua interpreter found)")
@@ -38,3 +43,47 @@ add_bench_lua_module(bench_handbridge handbridge handbridge.c)
 target_include_directories(bench_handbridge PRIVATE ${PY_INCLUDES})
 target_link_libraries(bench_handbridge PRIVATE ${PYTHON_LIB} ${PY_SYSLIBS})
 add_bench_lua_route(bench_lua_py_hand bench_handbridge app_hand.lua)
+
+# cffi, embedding mode: cffi_build.py generates and compiles libshapes_cffi.so,
+# which exports the callee's functions as C; cffishim.so is the Lua half.
+execute_process(COMMAND ${PYTHON} -c "import cffi"
+    RESULT_VARIABLE bench_no_cffi OUTPUT_QUIET ERROR_QUIET)
+if(bench_no_cffi)
+    message(STATUS "linkpy: bench_lua_py_cffi skipped (${PYTHON} cannot import cffi; pip install cffi)")
+else()
+    set(bench_cffi_lib "${CMAKE_CURRENT_BINARY_DIR}/libshapes_cffi.so")
+    add_custom_command(
+        OUTPUT "${bench_cffi_lib}"
+        COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/cffi_build.py"
+                --out "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cffi_build.py"
+        COMMENT "linkpy bench: generating libshapes_cffi.so with cffi"
+        VERBATIM)
+    add_custom_target(bench_shapes_cffi DEPENDS "${bench_cffi_lib}")
+    add_bench_lua_module(bench_cffishim cffishim cffishim.c)
+    add_dependencies(bench_cffishim bench_shapes_cffi)
+    target_link_libraries(bench_cffishim PRIVATE "${bench_cffi_lib}")
+    add_bench_lua_route(bench_lua_py_cffi bench_cffishim app_cffi.lua)
+endif()
+
+# lupa: the process is Python and Lua is the guest, but the timed loop is the
+# same Lua loop calling the same Python functions. lupa is rarely installed
+# system-wide, so the interpreter is configurable; the default is a venv in
+# the build tree:
+#   python3 -m venv <build>/bench/venv && <build>/bench/venv/bin/pip install lupa
+set(LINKPY_BENCH_LUPA_PYTHON "${CMAKE_BINARY_DIR}/bench/venv/bin/python" CACHE FILEPATH
+    "Python interpreter that can import lupa, for bench_lua_py_lupa")
+set(bench_no_lupa TRUE)
+if(EXISTS "${LINKPY_BENCH_LUPA_PYTHON}")
+    execute_process(COMMAND "${LINKPY_BENCH_LUPA_PYTHON}" -c "import lupa"
+        RESULT_VARIABLE bench_no_lupa OUTPUT_QUIET ERROR_QUIET)
+endif()
+if(bench_no_lupa)
+    message(STATUS "linkpy: bench_lua_py_lupa skipped (${LINKPY_BENCH_LUPA_PYTHON} cannot import lupa; "
+                   "create the venv and pip install lupa, or set LINKPY_BENCH_LUPA_PYTHON)")
+else()
+    add_test(NAME bench_lua_py_lupa
+        COMMAND "${LINKPY_BENCH_LUPA_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/app_lupa.py")
+    set_tests_properties(bench_lua_py_lupa PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${bench_callee_dir}")
+endif()
