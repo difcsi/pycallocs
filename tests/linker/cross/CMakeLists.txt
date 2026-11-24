@@ -8,6 +8,11 @@ add_linkpy_cross_test(py_calls_lua_point HOST python CALLEE lua)
 add_linkpy_cross_test(lua_calls_py_divide HOST lua CALLEE python)
 add_linkpy_cross_test(lua_calls_py_point HOST lua CALLEE python)
 
+# Benchmark, not a behaviour test: prints `bench <workload>: <us> us/call` for
+# the by-value route of tests/linker/bench/cross_bench.py and passes on exit
+# code (the loop checks every warm-up result).
+add_linkpy_cross_test(bench_lua_py HOST lua CALLEE python)
+
 # Negative: a pointer parameter cannot cross the language boundary by default;
 # the auditor must reject it before spending a JIT compile (asserted on the
 # diagnostic via PASS_REGULAR_EXPRESSION -- the auditor exits nonzero).
