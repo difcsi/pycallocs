@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """cross_bench.py [-B build_dir] [-r rounds] [-n calls] [--routes a,b,...]
-               [--out dir] [--timeout seconds] [--allow-missing]
+               [--precision percent] [--max-rounds n] [--out dir]
+               [--timeout seconds] [--allow-missing]
 
 Microseconds per Lua -> Python call, by route, and the lines of code each
 route takes: a bridge written by hand, cffi in embedding mode, lupa, and
@@ -14,10 +15,15 @@ ints in, a float out) is the fixed cost of a call, on the routes that have it.
 Method: each route is run once with 1000 calls (the linkstub is compiled and
 cached, the route is validated), then every route once at full length with the
 result thrown away (the core leaves whatever state the priming left it in),
-then the rounds, pinned to one core (BENCH_CPU, default 2), each round
-starting one route further down the list. Reported per route and workload:
-min and median over the rounds, and the median over the rounds of the ratio to
-the hand-written bridge in the same round. Lines of code are counted with cloc
+then the rounds, each round starting one route further down the list. Every
+run is pinned to one CPU, chosen on the machine at hand: one of its fastest
+cores, and not CPU 0's when there is another (BENCH_CPU overrides). When the
+`describe` times of a route still vary between rounds by more than
+--precision (interquartile range over median, default 5 percent), rounds are
+added, up to --max-rounds (default three times -r), and what is still above
+it then is named in a warning. Reported per route and workload: min, median
+and that spread over the rounds, and the median over the rounds of the ratio
+to the hand-written bridge in the same round. Lines of code are counted with cloc
 over the files that exist for one route only (Route.sources).
 
 A route that is not in the build is reported as `missing`, one that does not
@@ -85,7 +91,7 @@ ROUTES = [
 WORKLOADS = ("describe", "divide")
 BASELINE = "hand"
 PRIME_CALLS = 1000
-COLUMNS = ["route", "label", "workload", "status", "min_us", "median_us",
+COLUMNS = ["route", "label", "workload", "status", "min_us", "median_us", "spread_pct",
            "rel_to_hand", "rounds", "calls", "route_loc", "note"]
 
 
@@ -198,7 +204,16 @@ def check_run(route, exit_code, text):
 
 
 # ----------------------------------------------------------------- measuring
-def measure(routes, specs, rounds, calls, runner: Callable):
+def spread(samples):
+    """How much a route's rounds disagree: the interquartile range over the
+    median. One slow round among many does not move it."""
+    if len(samples) < 2:
+        return 0.0
+    q1, _, q3 = statistics.quantiles(samples, n=4, method="inclusive")
+    return (q3 - q1) / statistics.median(samples)
+
+
+def measure(routes, specs, rounds, calls, runner: Callable, *, precision=None, max_rounds=None):
     """Run every route: once to prime it (the linkstub is compiled and cached,
     the route is validated), once at full length with the result thrown away
     (so that no route is timed in the state the priming left the core in),
@@ -206,7 +221,9 @@ def measure(routes, specs, rounds, calls, runner: Callable):
     after the other, and each round starts one route further down the list, so
     that none is always the one that follows another. `specs` maps a ctest name
     to its TestSpec or None; `runner(route, spec, calls)` returns a RunResult.
-    A route that fails once is not run again."""
+    A route that fails once is not run again. With a `precision`, rounds are
+    added after the requested ones, up to `max_rounds` in all, for as long as
+    the `describe` samples of some route have a spread() above it."""
     data = {}
     for route in routes:
         if specs.get(route.ctest) is None:
@@ -231,12 +248,19 @@ def measure(routes, specs, rounds, calls, runner: Callable):
         run(route, PRIME_CALLS, keep=False)
     for route in healthy():
         run(route, calls, keep=False)
-    for r in range(rounds):
+    def settled():
+        return all(spread(data[r.id].samples.get("describe", [])) <= precision for r in healthy())
+
+    r = 0
+    while r < rounds or (precision is not None and r < (max_rounds or rounds) and not settled()):
         order = healthy()
-        start = r % len(order) if order else 0
+        if not order:
+            break
+        start = r % len(order)
         for route in order[start:] + order[:start]:
             if data[route.id].status == "ok":
                 run(route, calls, keep=True)
+        r += 1
     return data
 
 
@@ -259,7 +283,7 @@ def rows(routes, data, calls, loc=None):
         d = data[route.id]
         lines = (loc or {}).get(route.id)
         row = {"route": route.id, "label": route.label, "workload": "", "status": d.status,
-               "min_us": "", "median_us": "", "rel_to_hand": "", "rounds": "",
+               "min_us": "", "median_us": "", "spread_pct": "", "rel_to_hand": "", "rounds": "",
                "calls": str(calls), "route_loc": "" if lines is None else str(lines),
                "note": d.note}
         if d.status != "ok":
@@ -273,8 +297,16 @@ def rows(routes, data, calls, loc=None):
             out.append({**row, "workload": workload,
                         "min_us": f"{min(samples):.3f}",
                         "median_us": f"{statistics.median(samples):.3f}",
+                        "spread_pct": f"{100 * spread(samples):.1f}",
                         "rel_to_hand": _rel(samples, base_samples), "rounds": str(len(samples))})
     return out
+
+
+def noisy_rows(table, precision):
+    """(route, workload, spread in percent) of the rows whose rounds disagree
+    by more than `precision`."""
+    return [(row["route"], row["workload"], float(row["spread_pct"])) for row in table
+            if row["spread_pct"] and float(row["spread_pct"]) > 100 * precision]
 
 
 def write_csv(table, path):
@@ -441,6 +473,40 @@ def cmake_cache_values(text, names):
 
 
 # ------------------------------------------------------------------ running
+def pick_cpu(allowed, max_freq, siblings):
+    """The CPU to pin the runs to: among the `allowed` ones, one of those with
+    the highest maximum frequency (the performance cores of a hybrid machine;
+    all of them where the frequencies are equal or unknown), and not CPU 0 or
+    a hardware thread of its core, which takes most of the interrupts, unless
+    that leaves none. `max_freq` maps a CPU to its maximum frequency,
+    `siblings` to the set of hardware threads of its core."""
+    top = max((max_freq.get(c, 0) for c in allowed), default=0)
+    fastest = {c for c in allowed if max_freq.get(c, 0) == top}
+    return min(fastest - (siblings.get(0) or {0}) or fastest)
+
+
+def _read_topology(cpus):
+    """(max_freq, siblings) of pick_cpu, from sysfs; empty where it has none."""
+    max_freq, siblings = {}, {}
+    for c in cpus:
+        base = f"/sys/devices/system/cpu/cpu{c}/"
+        try:
+            with open(base + "cpufreq/cpuinfo_max_freq") as f:
+                max_freq[c] = int(f.read())
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(base + "topology/thread_siblings_list") as f:
+                threads = set()
+                for part in f.read().strip().split(","):
+                    lo, _, hi = part.partition("-")
+                    threads.update(range(int(lo), int(hi or lo) + 1))
+                siblings[c] = threads
+        except (OSError, ValueError):
+            pass
+    return max_freq, siblings
+
+
 def run_subprocess(route, spec, calls, *, cpu, cache_dir, timeout):
     """Run a route's test command the way ctest would, pinned to `cpu`: the
     caller's environment without an auditor or a preload of its own, then the
@@ -484,7 +550,8 @@ def _cpu_model():
 
 
 def _print_table(table):
-    heads = ["route", "workload", "status", "min_us", "median_us", "rel_to_hand", "rounds", "route_loc", "note"]
+    heads = ["route", "workload", "status", "min_us", "median_us", "spread_pct", "rel_to_hand", "rounds",
+             "route_loc", "note"]
     widths = {h: max(len(h), *(len(r[h]) for r in table)) for h in heads[:-1]}
     print("  ".join(h.ljust(widths[h]) for h in heads[:-1]) + "  note")
     for r in table:
@@ -497,6 +564,10 @@ def main(argv=None):
     ap.add_argument("-B", dest="build", default=os.path.join(REPO, "linker", "build"),
                     help="the LinkPy CMake build (default: linker/build of this tree)")
     ap.add_argument("-r", dest="rounds", type=int, default=7, help="timed rounds (default 7)")
+    ap.add_argument("--precision", type=float, default=5.0,
+                    help="spread between rounds, in percent of the median, above which rounds "
+                         "are added and a warning is printed (default 5)")
+    ap.add_argument("--max-rounds", type=int, help="most rounds to run in all (default 3 times -r)")
     ap.add_argument("-n", dest="calls", type=int, default=200000,
                     help="timed calls per workload and round (default 200000)")
     ap.add_argument("--routes", help="comma-separated route ids (default: all): "
@@ -513,11 +584,20 @@ def main(argv=None):
 
     if args.rounds < 1 or args.calls < 1:
         return usage_error("-r and -n must be at least 1")
-    cpu_text = os.environ.get("BENCH_CPU", "2")
-    if not cpu_text.isdigit() or int(cpu_text) >= (os.cpu_count() or 1):
-        return usage_error(f"BENCH_CPU={cpu_text} is not a CPU of this machine "
-                           f"(0..{(os.cpu_count() or 1) - 1})")
-    cpu = int(cpu_text)
+    if args.precision <= 0:
+        return usage_error("--precision must be positive")
+    max_rounds = args.max_rounds if args.max_rounds is not None else 3 * args.rounds
+    if max_rounds < args.rounds:
+        return usage_error("--max-rounds must be at least -r")
+    allowed = os.sched_getaffinity(0)
+    cpu_text = os.environ.get("BENCH_CPU")
+    if cpu_text is None:
+        cpu, cpu_choice = pick_cpu(allowed, *_read_topology(allowed)), "chosen automatically"
+    elif cpu_text.isdigit() and int(cpu_text) in allowed:
+        cpu, cpu_choice = int(cpu_text), "BENCH_CPU"
+    else:
+        return usage_error(f"BENCH_CPU={cpu_text} is not a CPU this process may run on "
+                           f"({','.join(map(str, sorted(allowed)))})")
 
     routes = ROUTES
     if args.routes:
@@ -544,20 +624,28 @@ def main(argv=None):
 
     started = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     load = os.getloadavg()[0]
-    print(f"cross_bench: {len(routes)} routes, {args.rounds} rounds of {args.calls} calls, "
-          f"cpu {cpu}, load {load:.2f}", file=sys.stderr)
+    print(f"cross_bench: {len(routes)} routes, {args.rounds} to {max_rounds} rounds of {args.calls} calls, "
+          f"cpu {cpu} ({cpu_choice}), load {load:.2f}", file=sys.stderr)
+    if load > 1.5:
+        print(f"cross_bench: warning: the 1-minute load is {load:.2f}; numbers taken on a busy "
+              "machine are not comparable", file=sys.stderr)
 
     def runner(route, spec, calls):
         print(f"  {route.id} ({calls} calls)", file=sys.stderr, flush=True)
         return run_subprocess(route, spec, calls, cpu=cpu, cache_dir=cache_dir, timeout=args.timeout)
 
-    data = measure(routes, specs, args.rounds, args.calls, runner)
+    data = measure(routes, specs, args.rounds, args.calls, runner,
+                   precision=args.precision / 100, max_rounds=max_rounds)
     counts, cloc_version = count_sources(routes)
     if cloc_version is None:
         print("cross_bench: cloc could not be run; route_loc is left empty", file=sys.stderr)
     loc = route_loc(routes, counts)
     table = rows(routes, data, args.calls, loc)
     write_csv(table, os.path.join(out, "figure10.csv"))
+    noisy = noisy_rows(table, args.precision / 100)
+    for route_id, workload, percent in noisy:
+        print(f"cross_bench: warning: {route_id} {workload} varies by {percent:.1f}% between rounds "
+              f"(wanted {args.precision:g}%); the machine was not quiet enough", file=sys.stderr)
 
     repo = _git(REPO)
     try:
@@ -574,6 +662,10 @@ def main(argv=None):
         "lua_fork": _git(os.path.dirname(fork)) if fork else None,
         "cpu_model": _cpu_model(),
         "pinned_cpu": cpu,
+        "pinned_cpu_choice": cpu_choice,
+        "precision_percent": args.precision,
+        "max_rounds": max_rounds,
+        "rows_above_precision": [list(n) for n in noisy],
         "load_1min_at_start": load,
         "kernel": platform.release(),
         "build": build,
@@ -596,7 +688,9 @@ def main(argv=None):
     commit = (repo["commit"][:7] + (", modified tree" if repo["dirty"] else "")) if repo else "unknown commit"
     header = [
         f"Generated by tests/linker/bench/cross_bench.py (pycallocs {commit}) on {started}; do not edit.",
-        f"{_cpu_model()}, cpu {cpu}, {args.rounds} rounds of {args.calls} calls.",
+        f"{_cpu_model()}, cpu {cpu}, {args.calls} calls per round, load {load:.2f} at start; "
+        + ("no route varied by more than" if not noisy else "SOME ROUTES VARIED BY MORE THAN")
+        + f" {args.precision:g}% between rounds.",
         "Blue: median microseconds per call of describe(Point). Orange: lines of code that exist",
         f"for the route only, by cloc {cloc_version}. Each kind of bar is scaled to its own tallest.",
         "To regenerate, run the script and copy <build>/bench/fig10/figure10.tex over this file.",

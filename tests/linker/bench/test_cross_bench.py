@@ -99,8 +99,8 @@ class Rows(unittest.TestCase):
     def test_rows(self):
         rs = cb.rows([A, B], self.DATA, 5000, {"hand": 113, "polylink-ref": 31})
         self.assertEqual(rs[0], {"route": "hand", "label": "hand-written bridge", "workload": "describe",
-            "status": "ok", "min_us": "0.200", "median_us": "0.250", "rel_to_hand": "1.000",
-            "rounds": "3", "calls": "5000", "route_loc": "113", "note": ""})
+            "status": "ok", "min_us": "0.200", "median_us": "0.250", "spread_pct": "20.0",
+            "rel_to_hand": "1.000", "rounds": "3", "calls": "5000", "route_loc": "113", "note": ""})
         self.assertEqual(rs[1]["status"], "failed"); self.assertEqual(rs[1]["min_us"], "")
         self.assertEqual(rs[1]["note"], "Assertion failed at x")
         self.assertEqual(rs[1]["route_loc"], "31")      # the code exists although the run failed
@@ -123,7 +123,46 @@ class Rows(unittest.TestCase):
             p = os.path.join(t, "f.csv"); cb.write_csv(cb.rows([A, B], self.DATA, 5000), p)
             with open(p) as f:
                 self.assertEqual(f.readline().strip(),
-                    "route,label,workload,status,min_us,median_us,rel_to_hand,rounds,calls,route_loc,note")
+                    "route,label,workload,status,min_us,median_us,spread_pct,rel_to_hand,rounds,calls,route_loc,note")
+
+class Precision(unittest.TestCase):
+    def ok(self, d): return cb.RunResult(True, {"describe": d}, {}, "")
+    def runner(self, times):
+        results = [self.ok(t) for t in times]
+        return lambda route, spec, n: results.pop(0)
+    def test_spread_is_the_interquartile_range_over_the_median(self):
+        self.assertEqual(cb.spread([1.0, 1.0, 1.0, 1.0]), 0.0)
+        self.assertEqual(cb.spread([0.9, 1.0, 1.0, 1.0, 1.1]), 0.0)     # one outlier each way does not count
+        self.assertAlmostEqual(cb.spread([1.0, 2.0, 3.0, 4.0, 5.0]), 2 / 3)
+        self.assertEqual(cb.spread([1.0]), 0.0)
+    def test_rounds_are_added_until_the_spread_is_within_the_precision(self):
+        # priming, discarded round, two requested rounds (noisy), then quiet ones
+        runner = self.runner([9, 8, 0.2, 0.4, 0.2, 0.2, 0.2, 0.2, 0.2])
+        data = cb.measure([A], {A.ctest: SPEC}, 2, 5000, runner, precision=0.05, max_rounds=9)
+        self.assertEqual(data["hand"].samples["describe"], [0.2, 0.4, 0.2, 0.2, 0.2])
+    def test_extra_rounds_stop_at_max_rounds(self):
+        runner = self.runner([9, 8, 0.2, 0.4, 0.2, 0.4, 0.2, 0.4])
+        data = cb.measure([A], {A.ctest: SPEC}, 2, 5000, runner, precision=0.05, max_rounds=4)
+        self.assertEqual(len(data["hand"].samples["describe"]), 4)
+    def test_noisy_rows_are_named(self):
+        table = [{"route": "hand", "workload": "describe", "status": "ok", "spread_pct": "20.0"},
+                 {"route": "cffi", "workload": "describe", "status": "ok", "spread_pct": "1.5"},
+                 {"route": "lupa", "workload": "", "status": "failed", "spread_pct": ""}]
+        self.assertEqual(cb.noisy_rows(table, 0.05), [("hand", "describe", 20.0)])
+
+class Cpu(unittest.TestCase):
+    FREQ = {0: 5200, 1: 5200, 2: 5200, 3: 5200, 4: 3900, 5: 3900}
+    SIBLINGS = {0: {0, 1}, 1: {0, 1}, 2: {2, 3}, 3: {2, 3}, 4: {4}, 5: {5}}
+    def test_a_fast_core_that_is_not_cpu0s(self):
+        self.assertEqual(cb.pick_cpu({0, 1, 2, 3, 4, 5}, self.FREQ, self.SIBLINGS), 2)
+    def test_uniform_machine_without_topology(self):
+        self.assertEqual(cb.pick_cpu({0, 1, 2, 3}, {}, {}), 1)
+    def test_single_cpu(self):
+        self.assertEqual(cb.pick_cpu({0}, {}, {}), 0)
+    def test_stays_inside_the_allowed_set(self):
+        self.assertEqual(cb.pick_cpu({4, 5}, self.FREQ, self.SIBLINGS), 4)
+    def test_cpu0s_core_when_it_is_the_only_fast_one(self):
+        self.assertEqual(cb.pick_cpu({0, 1, 4}, self.FREQ, self.SIBLINGS), 0)
 
 class Exit(unittest.TestCase):
     OK = cb.RouteData("ok", "", {"describe": [0.2]}, {})

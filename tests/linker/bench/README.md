@@ -60,7 +60,10 @@ the fixed cost of a call; the two by-reference routes do not run it.
 ### How it measures
 
 The script reads each test's command and environment from
-`ctest --show-only=json-v1` and runs it itself, pinned to `BENCH_CPU`:
+`ctest --show-only=json-v1` and runs it itself, pinned to one CPU. It chooses
+the CPU on the machine it runs on: one of the cores with the highest maximum
+frequency (the performance cores of a hybrid processor), and not CPU 0's core
+when there is another; `BENCH_CPU` overrides. Then:
 
 1. every route once with 1000 calls: the linkstub is compiled and cached, and
    a route that cannot run is found before anything is timed;
@@ -68,10 +71,18 @@ The script reads each test's command and environment from
    timed in the state the priming left the core in (a route that aborts under
    liballocs leaves it idle for ten seconds, and the next one then runs
    faster than it ever does again);
-3. the rounds, each starting one route further down the list.
+3. the rounds (`-r`, default 7), each starting one route further down the
+   list;
+4. more rounds, up to `--max-rounds` (default three times `-r`), for as long
+   as the `describe` times of some route vary between rounds by more than
+   `--precision` (default 5 percent). The variation is the interquartile
+   range over the median, `spread_pct` in the table, so one slow round among
+   many does not count. Rows still above the precision at the end are named
+   in a warning, and the generated figure's header says so: take those
+   numbers again on a quieter machine.
 
-Per route and workload it reports the min and the median over the rounds, and
-`rel_to_hand`: the median over the rounds of the route's time divided by the
+Per route and workload it reports the min, the median and the spread over the
+rounds, and `rel_to_hand`: the median over the rounds of the route's time divided by the
 `hand` route's time *in the same round*. The two were taken moments apart, so
 drift of the machine during the run cancels in the ratio; dividing one
 route's best round by another's does not have that property.
@@ -132,7 +143,9 @@ import it (`-DLINKPY_BENCH_LUPA_PYTHON`, default the venv below). Re-run
 ### Reproducing the report's figure
 
 Needs, besides the LinkPy build: `cloc`, `taskset`, cffi for the build's
-`python3`, and lupa (2.8 was used) in a venv of the same `python3`.
+`python3`, and lupa (2.8 was used) in a venv of the same `python3`. Nothing
+in the script names a machine: paths come from the build, the CPU from the
+topology, and the stopping rule from the spread it observes.
 
 ```sh
 python3 -m venv linker/build/bench/venv && linker/build/bench/venv/bin/pip install lupa
@@ -146,7 +159,7 @@ cp linker/build/bench/fig10/figure10.tex <report>/link/fig_call_overhead.tex
 look. Output, under `<build>/bench/fig10/`:
 
 * `figure10.csv`, columns
-  `route,label,workload,status,min_us,median_us,rel_to_hand,rounds,calls,route_loc,note`
+  `route,label,workload,status,min_us,median_us,spread_pct,rel_to_hand,rounds,calls,route_loc,note`
   (`label` is the bar's name in the report);
 * `figure10.json`: every sample, the `info` lines, each route's command and
   environment, the per-file line counts, the commits of this repository and
