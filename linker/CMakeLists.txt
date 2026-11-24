@@ -220,6 +220,9 @@ if(EXISTS "${LINKPY_TESTS_DIR}/tests.cmake")
         # Cross-language (VM host -> VM callee) tests need Lua on one side or
         # the other in every combination, so they gate on it as a whole.
         add_subdirectory("${LINKPY_TESTS_DIR}/cross" tests/cross)
+        # Baselines of the Lua -> Python per-call benchmark (a hand-written
+        # bridge, cffi, lupa), measured against the cross_bench_* fixtures.
+        add_subdirectory("${LINKPY_TESTS_DIR}/bench/lua_py" tests/bench_lua_py)
     else()
         message(STATUS "linkpy: Lua test suite disabled (liblua not found)")
     endif()
