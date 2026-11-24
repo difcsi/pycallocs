@@ -26,6 +26,19 @@ add_linkpy_cross_test(py_calls_lua_reject_ptr HOST python CALLEE lua
 if(LINKPY_BYREF_TESTS)
     add_linkpy_cross_test(py_calls_lua_bump HOST python CALLEE lua BYREF)
     add_linkpy_cross_test(lua_calls_py_bump HOST lua CALLEE python BYREF)
+
+    # Benchmarks (tests/linker/bench/cross_bench.py): one by-reference app,
+    # run under stock Lua with the luaproxy extension and under the contrib/lua
+    # fork, where the object handed over is a native foreign value.
+    add_linkpy_cross_test(bench_lua_py_ref HOST lua CALLEE python BYREF)
+    if(EXISTS "${LINKPY_POLYLUA_INTERP}")
+        add_linkpy_cross_test(bench_lua_py_native HOST lua CALLEE python BYREF
+            FIXTURE bench_lua_py_ref
+            LUA_INTERP "${LINKPY_POLYLUA_INTERP}"
+            LUA_HOST_CFLAGS "-I${PYCALLOCS_ROOT}/contrib/lua")
+    else()
+        message(STATUS "linkpy: cross_bench_lua_py_native skipped (no ${LINKPY_POLYLUA_INTERP})")
+    endif()
 else()
     message(STATUS "linkpy: cross by-reference tests disabled; "
                    "-DLINKPY_BYREF_TESTS=ON (with liballocs paths) to enable")

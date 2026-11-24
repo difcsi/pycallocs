@@ -364,13 +364,38 @@ endfunction()
 # so the host VM can mint proxied C objects from them), and the test runs with
 # LINKPY_CROSS_BYREF=1 under the liballocs preload with both proxy extensions
 # reachable. Register BYREF fixtures only under LINKPY_BYREF_TESTS.
+#
+# Three optional arguments let one fixture run under a second interpreter (the
+# benchmark fixtures do: the same by-reference app under stock Lua and under
+# the contrib/lua fork). The work directory and the target names always derive
+# from <name>:
+#   FIXTURE <dir>            source directory, default <name>
+#   LUA_INTERP <path>        the Lua HOST interpreter, default LINKPY_LUA_INTERP
+#   LUA_HOST_CFLAGS <flags>  include flags of that interpreter's headers, which
+#                            the host wrappers compile against; default the
+#                            system Lua's (LUA_CFLAGS_STR)
 # ---------------------------------------------------------------------------
 find_program(LINKPY_LUA_INTERP NAMES lua5.5 lua5.4 lua5.3 lua
     HINTS "${LINKPY_ROOT}/../contrib/lua"
     DOC "Lua interpreter used as the HOST in cross-language tests")
+set(LINKPY_POLYLUA_INTERP "${PYCALLOCS_ROOT}/contrib/lua/lua" CACHE FILEPATH
+    "the contrib/lua fork built with LIBALLOCS_CONFIG=1 (native foreign values)")
 
 function(add_linkpy_cross_test name)
-    cmake_parse_arguments(ARG "BYREF" "HOST;CALLEE;PASS_REGEX" "" ${ARGN})
+    cmake_parse_arguments(ARG "BYREF"
+        "HOST;CALLEE;PASS_REGEX;FIXTURE;LUA_INTERP;LUA_HOST_CFLAGS" "" ${ARGN})
+    set(fixture "${name}")
+    if(ARG_FIXTURE)
+        set(fixture "${ARG_FIXTURE}")
+    endif()
+    set(lua_interp "${LINKPY_LUA_INTERP}")
+    if(ARG_LUA_INTERP)
+        set(lua_interp "${ARG_LUA_INTERP}")
+    endif()
+    set(lua_host_cflags "${LUA_CFLAGS_STR}")
+    if(ARG_LUA_HOST_CFLAGS)
+        set(lua_host_cflags "${ARG_LUA_HOST_CFLAGS}")
+    endif()
 
     # Callee seams (mirror add_linkpy_test): the stub-header suffix, auditor,
     # VM template, and the VM the linkstub links.
@@ -394,25 +419,25 @@ function(add_linkpy_cross_test name)
     if(ARG_HOST STREQUAL python)
         set(host_template "${LINKPY_ROOT}/cpython/template_host_py.cpp")
         set(host_flags "-I${PY_INCLUDE} -I${PY_PLATINCLUDE}")
-        set(run_cmd "${PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/${name}/src/app.py")
+        set(run_cmd "${PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/${fixture}/src/app.py")
         # The allocs/elflib path is only exercised by BYREF fixtures but is
         # harmless otherwise.
         set(helper_env "PYTHONPATH=${LINKPY_ROOT}/cpython:${LINKPY_ALLOCS_PYTHONPATH}")
     else()
-        if(NOT LINKPY_LUA_INTERP)
+        if(NOT lua_interp)
             message(STATUS "linkpy: cross test ${name} skipped (no lua interpreter found)")
             return()
         endif()
         set(host_template "${LINKPY_ROOT}/lua/template_host_lua.cpp")
-        set(host_flags "${LUA_CFLAGS_STR}")
-        set(run_cmd "${LINKPY_LUA_INTERP}" "${CMAKE_CURRENT_SOURCE_DIR}/${name}/src/app.lua")
+        set(host_flags "${lua_host_cflags}")
+        set(run_cmd "${lua_interp}" "${CMAKE_CURRENT_SOURCE_DIR}/${fixture}/src/app.lua")
         # No ';;' default-path suffix: a ';' cannot survive CMake's ENVIRONMENT
         # list escaping intact, and the apps only require the linkpy helper.
         set(helper_env "LUA_PATH=${LINKPY_ROOT}/lua/?.lua")
     endif()
 
     set(test_name "cross_${name}")
-    set(test_dir "${CMAKE_CURRENT_SOURCE_DIR}/${name}")
+    set(test_dir "${CMAKE_CURRENT_SOURCE_DIR}/${fixture}")
     set(work_dir "${CMAKE_CURRENT_BINARY_DIR}/${name}")
     set(gen_dir "${work_dir}/gen")
     set(include_dir "${test_dir}/include")
