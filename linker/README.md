@@ -358,6 +358,12 @@ The drivers under `tests/linker/bench/` do that: instructions per call under
 callgrind, interleaved timing rounds, a profiled cache-hit start, and NGINX
 Unit end to end against upstream or another LinkPy tree (see its README).
 
+From a Lua host, `tests/linker/bench/cross_bench.py` times one call into
+Python through each route there is: a bridge written by hand, cffi, lupa, and
+the linkstub by value, by reference, and by reference from the `contrib/lua`
+fork. Its fixtures are the `cross_bench_lua_py*` and `bench_lua_py_*` tests;
+the same README says how to read the table it writes.
+
 ## TODOS
 
 * `pyhgen.py` covers scalars + by-value local-class structs; container/typing
